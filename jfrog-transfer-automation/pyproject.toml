@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jfrog-transfer-automation"
+version = "0.1.0"
+description = "Automate JFrog transfer-files and daily comparison reports"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pyyaml",
+  "requests",
+  "portalocker",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+jfrog-transfer-automation = "jfrog_transfer_automation.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

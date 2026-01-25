@@ -1,0 +1,56 @@
+schedule:
+  timezone: "America/Los_Angeles"
+  start_time: "01:00"
+  end_time: "05:00"
+  run_on_startup: false
+  catch_up_if_missed: false
+
+jfrog:
+  jfrog_cli_path: "jf"
+  source_server_id: "source-server"
+  target_server_id: "target-server"
+  source_url: null
+  target_url: null
+  source_access_token: null
+  target_access_token: null
+  verify_ssl: true
+  timeout_seconds: 60
+
+transfer:
+  include_repos_file: "repos.txt"
+  include_repos_inline: null
+  mode: "single_command"  # Options: "single_command" | "per_repo"
+                         # - single_command: One command for all repos (default, faster for small sets)
+                         # - per_repo: Separate command per repo (better for large sets, with batching and stuck detection)
+  threads: 8
+  filestore: true
+  ignore_state: false
+  batch_size: 4  # Only used in per_repo mode: number of repos to process in parallel
+  stuck_timeout_seconds: 600  # Only used in per_repo mode: seconds before considering a transfer stuck
+  poll_interval_seconds: 60
+  jfrog_cli_home_strategy: "default"  # Options: "default" | "per_repo_isolated"
+                                       # - default: Use shared JFrog CLI home directory
+                                       # - per_repo_isolated: Create isolated CLI home per repo (only for per_repo mode)
+  cli_log_level: "INFO"  # DEBUG, INFO, WARN, ERROR
+
+report:
+  enabled: true
+  repo_type: ["local", "federated"]  # Can be a string like "local" or a list like ["local", "federated"]
+  output_dir: "./runs"
+  detailed_comparison: true
+  repos_file_for_comparison: all_repos_to_compare.txt
+  enable_aql_queries: true
+  storage_calculation_wait_seconds: 60  # Wait time (seconds) after calculate_storage() API call
+
+notify:
+  method: "none"
+  email:
+    smtp_host: ""
+    smtp_port: 587
+    smtp_user: ""
+    smtp_password_env: "SMTP_PASSWORD"
+    to: ["team@example.com"]
+    from: "jfrog-automation@example.com"
+  webhook:
+    url: ""
+    headers: {}
