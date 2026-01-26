@@ -1,2 +1,5 @@
 test.txt
 suggestions
+config.yaml
+runs/
+*.pyc

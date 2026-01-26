@@ -18,6 +18,24 @@ comparison report, and optionally sends notifications.
 - **Installation**: See `INSTALL.md` for detailed installation and service setup instructions
 - **Quick start**: See `QUICKSTART.md` for usage examples
 
+## Dependencies
+
+Core dependencies are listed in `requirements.txt`:
+- `pyyaml` - YAML configuration parsing
+- `requests` - HTTP client for Artifactory REST API
+- `portalocker` - Cross-platform file locking
+
+Install dependencies:
+```bash
+# Recommended: Install as editable package (includes dependencies)
+pip install -e .
+
+# Or install dependencies only
+pip install -r requirements.txt
+```
+
+For development dependencies (pytest), see `pyproject.toml`.
+
 ## Commands
 
 - `validate` - Validate configuration and JFrog CLI setup

@@ -25,36 +25,54 @@ from jfrog_transfer_automation.util.time import get_missed_windows, next_window,
 
 
 def parse_args() -> argparse.Namespace:
+    # Create a parent parser with common arguments shared by all subcommands
+    # This allows --config to be used AFTER the subcommand
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument("--config", required=True, help="Path to config file")
+    parent_parser.add_argument("--verbose", action="store_true")
+    
     parser = argparse.ArgumentParser(prog="jfrog-transfer-automation")
-    parser.add_argument("--config", required=True, help="Path to config file")
+    # Also allow --config at top level (before subcommand) for convenience
+    parser.add_argument("--config", required=False, help="Path to config file (can also be specified after subcommand)")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be executed without running")
     parser.add_argument("--background", action="store_true", help="Run in background (detach from terminal)")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("validate")
     
-    run_once_parser = subparsers.add_parser("run-once")
+    validate_parser = subparsers.add_parser("validate", parents=[parent_parser])
+    
+    run_once_parser = subparsers.add_parser("run-once", parents=[parent_parser])
     run_once_parser.add_argument("--background", action="store_true", help="Run in background")
     run_once_parser.add_argument("--dry-run", action="store_true", help="Dry run mode")
     
-    subparsers.add_parser("status")
-    subparsers.add_parser("stop")
+    status_parser = subparsers.add_parser("status", parents=[parent_parser])
     
-    resume_parser = subparsers.add_parser("resume")
+    stop_parser = subparsers.add_parser("stop", parents=[parent_parser])
+    
+    resume_parser = subparsers.add_parser("resume", parents=[parent_parser])
     resume_parser.add_argument("--background", action="store_true", help="Run in background")
     resume_parser.add_argument("--dry-run", action="store_true", help="Dry run mode")
     
-    subparsers.add_parser("report")
-    subparsers.add_parser("scheduler")
+    report_parser = subparsers.add_parser("report", parents=[parent_parser])
     
-    monitor_parser = subparsers.add_parser("monitor")
+    scheduler_parser = subparsers.add_parser("scheduler", parents=[parent_parser])
+    
+    monitor_parser = subparsers.add_parser("monitor", parents=[parent_parser])
     monitor_parser.add_argument("--interval", type=int, default=10, help="Monitor interval in seconds (default: 10)")
     
-    simulate_parser = subparsers.add_parser("simulate-missed")
+    simulate_parser = subparsers.add_parser("simulate-missed", parents=[parent_parser])
     simulate_parser.add_argument("--days-ago", type=int, default=2, help="Simulate last run N days ago (default: 2)")
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Ensure config is set (required by subcommands via parent_parser)
+    # When using parents, argparse merges the namespaces, so args.config should be set
+    # if provided either before or after the subcommand
+    if not hasattr(args, 'config') or not args.config:
+        parser.error("the following arguments are required: --config")
+    
+    return args
 
 
 def _run_dir(base_dir: str) -> Path:
@@ -195,13 +213,37 @@ def _run_in_background(config_path: str, verbose: bool, dry_run: bool, command: 
 
 
 def cmd_validate(config) -> int:
+    """Validate configuration and JFrog CLI setup."""
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
+    
+    # Validate schedule
     if not config.schedule.start_time:
-        raise RuntimeError("schedule.start_time is required")
-    for server_id in [config.jfrog.source_server_id, config.jfrog.target_server_id]:
-        if not server_id:
-            raise RuntimeError("source_server_id and target_server_id are required")
-        extract_cli_config(jf_cli, server_id)
+        raise RuntimeError("schedule.start_time is required in config")
+    
+    # Validate server IDs
+    if not config.jfrog.source_server_id:
+        raise RuntimeError("jfrog.source_server_id is required in config")
+    if not config.jfrog.target_server_id:
+        raise RuntimeError("jfrog.target_server_id is required in config")
+    
+    # Validate JFrog CLI server configurations
+    print(f"Validating source server: {config.jfrog.source_server_id}")
+    try:
+        source_creds = extract_cli_config(jf_cli, config.jfrog.source_server_id)
+        print(f"  ✓ Source server configured: {source_creds.url}")
+    except RuntimeError as e:
+        print(f"  ✗ Source server validation failed")
+        raise RuntimeError(f"Source server validation failed: {e}")
+    
+    print(f"Validating target server: {config.jfrog.target_server_id}")
+    try:
+        target_creds = extract_cli_config(jf_cli, config.jfrog.target_server_id)
+        print(f"  ✓ Target server configured: {target_creds.url}")
+    except RuntimeError as e:
+        print(f"  ✗ Target server validation failed")
+        raise RuntimeError(f"Target server validation failed: {e}")
+    
+    print("\n✓ Configuration validation successful!")
     return 0
 
 

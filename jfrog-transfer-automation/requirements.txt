@@ -1,0 +1,11 @@
+# Core dependencies for jfrog-transfer-automation
+# Install with: pip install -r requirements.txt
+# Or use: pip install -e . (recommended, installs as editable package)
+
+pyyaml>=6.0
+requests>=2.28.0
+portalocker>=2.7.0
+
+# Optional development dependencies
+# Install with: pip install -e ".[dev]"
+# pytest>=7.0.0

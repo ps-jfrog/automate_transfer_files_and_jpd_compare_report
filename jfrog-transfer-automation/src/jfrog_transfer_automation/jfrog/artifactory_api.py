@@ -24,6 +24,25 @@ class ArtifactoryClient:
             "Accept": "application/json",
         }
 
+    def _artifactory_api_url(self, endpoint: str) -> str:
+        """
+        Construct Artifactory API URL, handling both platform URL and Artifactory URL formats.
+        
+        Args:
+            endpoint: API endpoint path (e.g., "api/storageinfo/calculate")
+        
+        Returns:
+            Full URL to the API endpoint
+        """
+        base = self.base_url.rstrip("/")
+        # Check if base_url already includes /artifactory
+        if base.endswith("/artifactory"):
+            # Already has /artifactory, just append the endpoint
+            return f"{base}/{endpoint}"
+        else:
+            # Platform URL, need to add /artifactory
+            return f"{base}/artifactory/{endpoint}"
+
     def calculate_storage(self, wait_seconds: int = 0) -> None:
         """
         Calculate storage info and optionally wait for calculation to complete.
@@ -31,7 +50,7 @@ class ArtifactoryClient:
         Args:
             wait_seconds: Fixed wait time after API call (default: use instance config)
         """
-        url = f"{self.base_url}/artifactory/api/storageinfo/calculate"
+        url = self._artifactory_api_url("api/storageinfo/calculate")
         response = requests.post(
             url,
             headers=self._headers(),
@@ -53,7 +72,7 @@ class ArtifactoryClient:
             logger.info("Storage calculation wait completed")
 
     def get_storageinfo(self) -> Dict[str, Any]:
-        url = f"{self.base_url}/artifactory/api/storageinfo"
+        url = self._artifactory_api_url("api/storageinfo")
         response = requests.get(
             url,
             headers=self._headers(),
@@ -89,7 +108,7 @@ class ArtifactoryClient:
     
     def _get_repositories_single_type(self, repo_type: str) -> List[Dict[str, Any]]:
         """Get repositories for a single type."""
-        url = f"{self.base_url}/artifactory/api/repositories?type={repo_type}"
+        url = self._artifactory_api_url(f"api/repositories?type={repo_type}")
         response = requests.get(
             url,
             headers=self._headers(),
