@@ -21,7 +21,7 @@ from jfrog_transfer_automation.report.generator import generate_report
 from jfrog_transfer_automation.transfer.locks import RunLock
 from jfrog_transfer_automation.transfer.runner import TransferRunner
 from jfrog_transfer_automation.transfer.repo_list import load_repos
-from jfrog_transfer_automation.util.time import get_missed_windows, next_window, parse_hhmm, sleep_seconds_until
+from jfrog_transfer_automation.util.time import ScheduleWindow, get_missed_windows, next_window, parse_hhmm, sleep_seconds_until
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,6 +119,16 @@ def _write_last_run_time(run_base: Path, timestamp: float) -> None:
     """Write last run time to a tracking file."""
     (run_base / "last_run_time.json").write_text(
         json.dumps({"last_run_time": timestamp}, indent=2)
+    )
+
+
+def _write_next_scheduled_run(run_base: Path, window: ScheduleWindow) -> None:
+    """Write next scheduled run time to a tracking file."""
+    (run_base / "next_scheduled_run.json").write_text(
+        json.dumps({
+            "next_run_start": window.start.isoformat(),
+            "next_run_end": window.end.isoformat() if window.end else None,
+        }, indent=2)
     )
 
 
@@ -279,8 +289,41 @@ def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool 
     lock = RunLock(run_base / ".lock")
     logger.debug("Attempting to acquire lock...")
     if not lock.acquire():
-        logger.info("Run in progress. Skipping.")
+        # Check if there's a current run to provide better error message
+        current = _read_current_run(run_base)
+        if current and current.get('started_at'):
+            started_at = datetime.fromtimestamp(current.get('started_at'), tz=timezone.utc)
+            logger.info(f"Run in progress (started at {started_at.strftime('%Y-%m-%d %H:%M:%S')}). Skipping.")
+        elif current:
+            logger.info("Run in progress (status: {}). Skipping.".format(current.get('status', 'unknown')))
+        else:
+            logger.info("Run in progress (lock held by another process). Skipping.")
         return 1
+    
+    # Check if there's a stale "running" status in current_run.json
+    # If the lock was acquired but current_run.json shows "running", it might be stale
+    current = _read_current_run(run_base)
+    if current and current.get('status') == 'running':
+        started_at = current.get('started_at')
+        if started_at:
+            # Check if the run is stale (started more than 24 hours ago)
+            started_dt = datetime.fromtimestamp(started_at, tz=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - started_dt).total_seconds() / 3600
+            if age_hours > 24:
+                logger.warning(f"Found stale 'running' status (started {age_hours:.1f} hours ago). Clearing it.")
+                # Clear the stale status
+                _write_current_run(run_base, {"status": "cleared_stale", "cleared_at": time.time()})
+            else:
+                # Run is recent, might actually be running - check if lock file exists
+                lock_file = run_base / ".lock"
+                if not lock_file.exists():
+                    # Lock file doesn't exist but status says running - this is inconsistent, clear it
+                    logger.warning("Found 'running' status but no lock file. Clearing stale status.")
+                    _write_current_run(run_base, {"status": "cleared_stale", "cleared_at": time.time()})
+                else:
+                    # Lock exists and status is recent - might be a real running process
+                    logger.warning(f"Found 'running' status (started {age_hours:.1f} hours ago) but lock was acquired. This may indicate a stale status.")
+                    # Still proceed since we have the lock
     logger.debug("Lock acquired successfully")
 
     try:
@@ -515,21 +558,25 @@ def cmd_simulate_missed(config, verbose: bool, days_ago: int = 2) -> int:
             logger.info(f"  - {window.start}")
         
         if config.schedule.catch_up_if_missed:
-            logger.info("catch_up_if_missed is enabled. Would run catch-up transfers.")
-            lock = RunLock(run_base / ".lock")
+            logger.info("catch_up_if_missed is enabled. Attempting to run catch-up transfers...")
+            # Don't acquire lock here - let cmd_run_once handle its own locking
+            # This prevents double-locking issues
             for window in missed:
-                if lock.acquire():
-                    try:
-                        logger.info(f"Running catch-up for {window.start}")
-                        cmd_run_once(config, verbose)
-                    finally:
-                        lock.release()
+                logger.info(f"Attempting catch-up for window starting at {window.start}...")
+                result = cmd_run_once(config, verbose)
+                if result == 0:
+                    logger.info(f"Successfully completed catch-up for {window.start}")
                 else:
-                    logger.warning("Lock held, skipping catch-up window")
+                    logger.warning(f"Catch-up for {window.start} returned non-zero exit code: {result}")
+                    logger.warning("This may be because the lock was held by another process (e.g., scheduler)")
         else:
-            logger.info("catch_up_if_missed is disabled. Would skip missed runs.")
+            logger.info("catch_up_if_missed is disabled. Skipping missed runs.")
     else:
         logger.info("No missed windows found with current simulation.")
+        logger.debug("This could mean:")
+        logger.debug("  - The fake last run time is too recent")
+        logger.debug("  - The schedule time hasn't occurred yet today")
+        logger.debug("  - There's an issue with the missed windows calculation")
     
     return 0
 
@@ -558,7 +605,6 @@ def cmd_report(config, verbose: bool) -> int:
 
 def cmd_scheduler(config, verbose: bool) -> int:
     run_base = Path(config.report.output_dir).expanduser().resolve()
-    lock = RunLock(run_base / ".lock")
     logger = setup_logging(run_base, verbose)
 
     # Handle catch-up if missed runs
@@ -576,14 +622,9 @@ def cmd_scheduler(config, verbose: bool) -> int:
             if missed:
                 logger.info(f"Found {len(missed)} missed schedule window(s). Running catch-up...")
                 for window in missed:
-                    if lock.acquire():
-                        try:
-                            logger.info(f"Catching up missed run from {window.start}")
-                            cmd_run_once(config, verbose)
-                        finally:
-                            lock.release()
-                    else:
-                        logger.warning("Lock held during catch-up, skipping missed window")
+                    logger.info(f"Catching up missed run from {window.start}")
+                    # cmd_run_once handles its own locking, so we just call it
+                    cmd_run_once(config, verbose)
 
     if config.schedule.run_on_startup:
         cmd_run_once(config, verbose)
@@ -596,11 +637,18 @@ def cmd_scheduler(config, verbose: bool) -> int:
             config.schedule.timezone,
         )
         sleep_for = sleep_seconds_until(window.start)
+        logger.info(f"Next scheduled run at {window.start} (in {sleep_for} seconds)")
+        _write_next_scheduled_run(run_base, window)
         time.sleep(sleep_for)
 
-        if lock.acquire():
-            lock.release()
-            cmd_run_once(config, verbose)
+        logger.info(f"Starting scheduled transfer at {window.start}")
+        # cmd_run_once handles its own locking - if lock is held, it will skip and return 1
+        result = cmd_run_once(config, verbose)
+        if result != 0:
+            # Lock was held - cmd_run_once already logged the reason
+            # Wait a bit before recalculating to ensure we get the next window, not the same one
+            time.sleep(1)
+            continue
 
 
 def _notify(config, report_path: Path, logger) -> None:

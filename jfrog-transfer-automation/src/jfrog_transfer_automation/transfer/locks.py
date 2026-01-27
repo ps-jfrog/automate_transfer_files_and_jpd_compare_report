@@ -26,3 +26,12 @@ class RunLock:
         if self._handle:
             self._handle.release()
             self._handle = None
+            # Try to remove the lock file after release (it may remain from portalocker)
+            # Only remove if we successfully released it and the file exists
+            try:
+                if self.lock_path.exists():
+                    self.lock_path.unlink()
+            except (OSError, PermissionError):
+                # Ignore errors - file might be locked by another process or already deleted
+                # This is safe to ignore as the lock is already released
+                pass

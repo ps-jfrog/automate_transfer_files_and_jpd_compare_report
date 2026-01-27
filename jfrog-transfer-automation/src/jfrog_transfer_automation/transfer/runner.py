@@ -81,8 +81,12 @@ class TransferRunner:
             "transfer-files",
             "--include-repos",
             self._include_repos_arg(repos),
-            f"--ignore-state={str(self.config.transfer.ignore_state).lower()}",
         ]
+        
+        # Always include --ignore-state with explicit value (JFrog CLI requires this)
+        ignore_state_value = str(self.config.transfer.ignore_state).lower()
+        args.append(f"--ignore-state={ignore_state_value}")
+        logger.debug(f"Adding ignore-state argument: --ignore-state={ignore_state_value} (from config: {self.config.transfer.ignore_state})")
         
         # Only include --filestore if it's True (presence of flag means enabled)
         if self.config.transfer.filestore:
@@ -127,8 +131,13 @@ class TransferRunner:
         logger.debug("Thread adjustment completed")
         
         logger.debug("Building transfer arguments...")
+        logger.debug(f"Config ignore_state value: {self.config.transfer.ignore_state} (type: {type(self.config.transfer.ignore_state)})")
         args = self._build_transfer_args(repos)
         logger.debug(f"Transfer args: {args}")
+        # Verify ignore-state argument
+        ignore_state_arg = next((arg for arg in args if arg.startswith("--ignore-state=")), None)
+        if ignore_state_arg:
+            logger.debug(f"ignore-state argument: {ignore_state_arg}")
         
         if dry_run:
             env = os.environ.copy()
