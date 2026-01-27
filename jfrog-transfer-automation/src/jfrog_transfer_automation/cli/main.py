@@ -135,22 +135,35 @@ def _end_timestamp(config) -> float | None:
 
 
 def _resolve_clients(config) -> tuple[ArtifactoryClient, ArtifactoryClient]:
+    import logging
+    logger = logging.getLogger("jfrog_transfer_automation")
+    
+    logger.debug("=== _resolve_clients: Starting ===")
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
 
     if not config.jfrog.source_url or not config.jfrog.source_access_token:
+        logger.debug(f"Extracting source server config for: {config.jfrog.source_server_id}")
         creds = extract_cli_config(jf_cli, config.jfrog.source_server_id)
         config.jfrog.source_url = config.jfrog.source_url or creds.url
         config.jfrog.source_access_token = (
             config.jfrog.source_access_token or creds.access_token
         )
+        logger.debug(f"Source server URL: {config.jfrog.source_url}")
+    else:
+        logger.debug("Source URL and token already configured")
 
     if not config.jfrog.target_url or not config.jfrog.target_access_token:
+        logger.debug(f"Extracting target server config for: {config.jfrog.target_server_id}")
         creds = extract_cli_config(jf_cli, config.jfrog.target_server_id)
         config.jfrog.target_url = config.jfrog.target_url or creds.url
         config.jfrog.target_access_token = (
             config.jfrog.target_access_token or creds.access_token
         )
+        logger.debug(f"Target server URL: {config.jfrog.target_url}")
+    else:
+        logger.debug("Target URL and token already configured")
 
+    logger.debug("Creating ArtifactoryClient instances...")
     source_client = ArtifactoryClient(
         base_url=config.jfrog.source_url,
         access_token=config.jfrog.source_access_token,
@@ -165,6 +178,7 @@ def _resolve_clients(config) -> tuple[ArtifactoryClient, ArtifactoryClient]:
         timeout_seconds=config.jfrog.timeout_seconds,
         storage_calculation_wait_seconds=config.report.storage_calculation_wait_seconds,
     )
+    logger.debug("=== _resolve_clients: Completed ===")
     return source_client, target_client
 
 
@@ -248,31 +262,50 @@ def cmd_validate(config) -> int:
 
 
 def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool = False, config_path: str = "") -> int:
+    logger = None
     if background:
         return _run_in_background(config_path, verbose, dry_run)
     
+    logger = setup_logging(_run_dir(config.report.output_dir), verbose)
+    logger.debug("=== cmd_run_once: Starting ===")
+    logger.debug(f"Config path: {config_path}, dry_run: {dry_run}, verbose: {verbose}")
+    
     run_dir = _run_dir(config.report.output_dir)
-    logger = setup_logging(run_dir, verbose)
+    logger.debug(f"Run directory: {run_dir}")
 
     run_base = Path(config.report.output_dir).expanduser().resolve()
+    logger.debug(f"Run base directory: {run_base}")
+    
     lock = RunLock(run_base / ".lock")
+    logger.debug("Attempting to acquire lock...")
     if not lock.acquire():
         logger.info("Run in progress. Skipping.")
         return 1
+    logger.debug("Lock acquired successfully")
 
     try:
+        logger.debug("Writing current run status...")
         _write_current_run(
             run_base,
             {"status": "running", "started_at": time.time(), "run_dir": str(run_dir)},
         )
+        logger.debug("Initializing TransferRunner...")
         transfer = TransferRunner(config, JFrogCLI(config.jfrog.jfrog_cli_path))
-        transfer_result = transfer.run_and_monitor(run_dir, end_time=_end_timestamp(config), dry_run=dry_run)
+        
+        end_time = _end_timestamp(config)
+        logger.debug(f"Starting transfer monitoring (end_time: {end_time})")
+        transfer_result = transfer.run_and_monitor(run_dir, end_time=end_time, dry_run=dry_run)
+        logger.debug(f"Transfer monitoring completed. Status: {transfer_result.status}")
         
         if not dry_run:
-            logger.info("Transfer completed in %.1fs", transfer_result.ended_at - transfer_result.started_at)
+            elapsed = transfer_result.ended_at - transfer_result.started_at
+            logger.info("Transfer completed in %.1fs", elapsed)
+            logger.debug(f"Transfer details: status={transfer_result.status}, message={transfer_result.message}")
 
             if config.report.enabled:
+                logger.debug("Report generation enabled, resolving clients...")
                 source_client, target_client = _resolve_clients(config)
+                logger.debug("Clients resolved, generating report...")
                 report_dir = run_dir / "reports"
                 jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
                 result = generate_report(
@@ -288,8 +321,12 @@ def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool 
                     jf_cli=jf_cli,
                 )
                 logger.info("Report generated: %s", result.report_path)
+                logger.debug("Sending notifications...")
                 _notify(config, result.report_path, logger)
+            else:
+                logger.debug("Report generation disabled")
 
+            logger.debug("Writing final run status...")
             _write_current_run(
                 run_base,
                 {"status": "completed", "ended_at": time.time(), "run_dir": str(run_dir)},
@@ -298,14 +335,24 @@ def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool 
         else:
             logger.info("Dry run completed - no actual transfer executed")
         
+        logger.debug("=== cmd_run_once: Completed successfully ===")
         return 0
     finally:
+        logger.debug("Releasing lock...")
         lock.release()
+        logger.debug("Lock released")
 
 
 def cmd_status(config) -> int:
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-    status = jf_cli.run(["rt", "transfer-files", "--status"])
+    # Status command requires server IDs: jf rt transfer-files --status <source> <target>
+    status = jf_cli.run([
+        "rt",
+        "transfer-files",
+        "--status",
+        config.jfrog.source_server_id,
+        config.jfrog.target_server_id,
+    ])
     print("JFrog Transfer Status:")
     print(status.stdout or status.stderr)
 
@@ -415,8 +462,14 @@ def cmd_monitor(config, interval: int = 10) -> int:
     
     try:
         while True:
-            # Check JFrog transfer status
-            status = jf_cli.run(["rt", "transfer-files", "--status"])
+            # Check JFrog transfer status (requires server IDs)
+            status = jf_cli.run([
+                "rt",
+                "transfer-files",
+                "--status",
+                config.jfrog.source_server_id,
+                config.jfrog.target_server_id,
+            ])
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Transfer Status:")
             print(status.stdout or status.stderr)
             
@@ -569,13 +622,23 @@ def _notify(config, report_path: Path, logger) -> None:
 
 
 def main() -> int:
+    import logging
+    logger = logging.getLogger("jfrog_transfer_automation")
+    
     args = parse_args()
+    logger.debug(f"=== main: Starting jfrog-transfer-automation ===")
+    logger.debug(f"Command: {args.command}, Config: {args.config}, Verbose: {args.verbose}")
+    
+    logger.debug("Loading configuration...")
     config = apply_env_overrides(load_config(args.config))
+    logger.debug("Configuration loaded successfully")
+    
     command = args.command
     
     # Get dry_run and background from command-specific args or top-level args
     dry_run = getattr(args, "dry_run", False)
     background = getattr(args, "background", False)
+    logger.debug(f"dry_run: {dry_run}, background: {background}")
 
     if command == "validate":
         return cmd_validate(config)
