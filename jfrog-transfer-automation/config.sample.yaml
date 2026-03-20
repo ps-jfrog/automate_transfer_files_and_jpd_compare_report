@@ -100,8 +100,10 @@ transfer:
   poll_interval_seconds: 60
 
   # JFrog CLI config home strategy:
-  #   default             — shared CLI home for all operations.
+  #   default             — shared CLI home (~/.jfrog) for all operations.
   #   per_repo_isolated   — isolated home per repo (only meaningful with per_repo mode).
+  #                         Each repo gets its own JFROG_CLI_HOME_DIR at <output_dir>/cli_homes/<repo>/
+  #                         which is persistent across runs, preserving transfer state for delta sync.
   jfrog_cli_home_strategy: "default"
 
   # Log level passed through to JFrog CLI where supported (e.g. DEBUG, INFO, WARN, ERROR).

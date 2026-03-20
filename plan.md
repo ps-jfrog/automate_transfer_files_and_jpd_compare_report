@@ -241,6 +241,11 @@ Deliverables: unit tests with mocked subprocess/HTTP.
    - Support `mode: "per_repo"` to run transfers per repository
    - Implement batching with `batch_size` for parallel execution
    - Support `jfrog_cli_home_strategy: "per_repo_isolated"` for isolated CLI home directories
+6. Persist per_repo_isolated CLI homes across runs:
+   - Store isolated CLI homes at `<output_dir>/cli_homes/<repo>/` instead of under the
+     ephemeral per-run timestamped directory so that JFrog CLI transfer state is preserved
+     across scheduled runs (enabling proper delta sync).
+   - Each repo still gets its own JFROG_CLI_HOME_DIR for concurrency safety within a run.
 
 Deliverables: `jfrog-transfer-automation run-once --config config.yaml`.
 
@@ -385,6 +390,7 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Per-repo transfer mode with batching
 - [x] Stuck detection and restart logic
 - [x] Per-repo isolated JFROG_CLI_HOME_DIR strategy
+- [x] Persist per_repo_isolated CLI homes across runs for delta sync state preservation
 - [x] Catch-up missed runs functionality
 - [x] Schedule simulation/testing feature (simulate-missed command)
 - [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)

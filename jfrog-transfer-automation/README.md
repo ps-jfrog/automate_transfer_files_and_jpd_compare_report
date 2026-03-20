@@ -135,9 +135,10 @@ Creates a separate `JFROG_CLI_HOME_DIR` for each repository transfer.
 - You want complete isolation between repository transfers
 
 **How it works:**
-- Creates isolated directories: `runs/<timestamp>/cli_homes/<repo-name>/`
+- Creates persistent isolated directories: `<output_dir>/cli_homes/<repo-name>/`
 - Each repository transfer uses its own CLI home directory
-- Prevents state conflicts when processing multiple repositories
+- Prevents state conflicts when processing multiple repositories in parallel
+- CLI homes persist across runs, preserving JFrog CLI transfer state for proper delta sync
 
 **Example:**
 ```yaml
@@ -148,3 +149,69 @@ transfer:
 ```
 
 **Note:** This option only has effect when `transfer.mode` is set to `"per_repo"`. In `single_command` mode, it is ignored.
+
+### Directory layout
+
+The `output_dir` (configured via `report.output_dir`, default `./runs`) contains both persistent state and per-run artifacts. The layout differs depending on the `jfrog_cli_home_strategy`:
+
+#### With `jfrog_cli_home_strategy: "default"`
+
+All repos share the system-wide JFrog CLI home (`~/.jfrog`). Delta sync state is stored there automatically by the JFrog CLI.
+
+```
+<output_dir>/                              (e.g. ./runs/)
+├── .lock                                  ← run lock file
+├── current_run.json                       ← current run status
+├── last_run_time.json                     ← last successful run timestamp
+├── next_scheduled_run.json                ← next scheduled run time
+│
+├── 20260127_214200/                       ← per-run directory (one per run)
+│   ├── run.log                            ← run log
+│   ├── reports/
+│   │   ├── comparison-20260127_214200.txt  ← comparison report
+│   │   ├── comparison-summary.json
+│   │   ├── source-storageinfo-*.json
+│   │   └── target-storageinfo-*.json
+│   └── logs/                              ← per-repo transfer logs (per_repo mode only)
+│       ├── repo-a.log
+│       └── repo-b.log
+│
+└── 20260128_214200/                       ← next run (same structure)
+    └── ...
+```
+
+Delta sync state: `~/.jfrog` (shared, persistent, managed by JFrog CLI)
+
+#### With `jfrog_cli_home_strategy: "per_repo_isolated"`
+
+Each repo gets its own persistent CLI home under `<output_dir>/cli_homes/`. Transfer state is preserved across runs for proper delta sync, while each repo remains isolated for concurrency safety.
+
+```
+<output_dir>/                              (e.g. ./runs/)
+├── .lock
+├── current_run.json
+├── last_run_time.json
+├── next_scheduled_run.json
+│
+├── cli_homes/                             ← persistent CLI homes (delta sync state)
+│   ├── repo-a/                            ← JFROG_CLI_HOME_DIR for repo-a
+│   │   └── .jfrog/                        ← JFrog CLI state (transfer history, etc.)
+│   └── repo-b/                            ← JFROG_CLI_HOME_DIR for repo-b
+│       └── .jfrog/
+│
+├── 20260127_214200/                       ← per-run directory (one per run)
+│   ├── run.log
+│   ├── reports/
+│   │   ├── comparison-20260127_214200.txt
+│   │   ├── comparison-summary.json
+│   │   ├── source-storageinfo-*.json
+│   │   └── target-storageinfo-*.json
+│   └── logs/
+│       ├── repo-a.log
+│       └── repo-b.log
+│
+└── 20260128_214200/                       ← next run (same structure)
+    └── ...
+```
+
+Delta sync state: `<output_dir>/cli_homes/<repo>/` (per-repo, persistent across runs)

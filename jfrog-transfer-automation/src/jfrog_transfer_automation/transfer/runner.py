@@ -99,9 +99,15 @@ class TransferRunner:
         return args
 
     def _get_cli_home_dir(self, repo: str, run_dir: Path) -> Optional[Path]:
-        """Get isolated CLI home directory for a repo if strategy is per_repo_isolated."""
+        """Get isolated CLI home directory for a repo if strategy is per_repo_isolated.
+        
+        CLI homes are stored under <output_dir>/cli_homes/<repo>/ (persistent across runs)
+        so that JFrog CLI transfer state is preserved for delta sync, while still giving
+        each repo its own JFROG_CLI_HOME_DIR for concurrency safety.
+        """
         if self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated":
-            repo_home = run_dir / "cli_homes" / repo
+            run_base = Path(self.config.report.output_dir).expanduser().resolve()
+            repo_home = run_base / "cli_homes" / repo
             repo_home.mkdir(parents=True, exist_ok=True)
             return repo_home
         return None
