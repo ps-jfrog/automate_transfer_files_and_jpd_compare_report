@@ -44,6 +44,58 @@ transfer:
 
 See `README.md` for detailed documentation on transfer modes and `jfrog_cli_home_strategy`.
 
+### Building the Repository List
+
+The `transfer.include_repos_file` setting points to a text file with one repository key per line. Use the JFrog CLI to generate this list from your source Artifactory.
+
+**Get local repos** (with `jq`):
+```bash
+jf rt curl -X GET "/api/repositories?type=local" --server-id=source | \
+  jq -r '.[] | .key' >> all_local_repos_in_source.txt
+```
+
+**Without `jq`** (any of these alternatives work):
+```bash
+# Option 1: grep + cut
+jf rt curl -X GET "/api/repositories?type=local" -s --server-id=source | \
+  grep '"key"' | cut -d'"' -f4 >> all_local_repos_in_source.txt
+
+# Option 2: grep + sed
+jf rt curl -X GET "/api/repositories?type=local" -s --server-id=source | \
+  grep -o '"key" *: *"[^"]*"' | \
+  sed -E 's/"key" *: *"([^"]*)"/\1/' >> all_local_repos_in_source.txt
+
+# Option 3: awk
+jf rt curl -X GET "/api/repositories?type=local" -s --server-id=source | \
+  awk -F'"key"[[:space:]]*:[[:space:]]*' '{for (i=2; i<=NF; i++) print $i}' | \
+  awk -F'"' '{print $2}' >> all_local_repos_in_source.txt
+```
+
+**Sort the list** (recommended for consistency):
+```bash
+sort -o all_local_repos_in_source.txt all_local_repos_in_source.txt
+```
+
+**Exclude specific repos** (e.g., customer-managed repos you don't want to transfer):
+```bash
+comm -23 <(sort all_local_repos_in_source.txt) \
+         <(sort exclude_these_repos.txt) > repos_to_transfer.txt
+```
+
+**For federated repos**, use `type=federated` instead:
+```bash
+jf rt curl -X GET "/api/repositories?type=federated" --server-id=source | \
+  jq -r '.[] | .key' >> all_federated_repos_in_source.txt
+
+sort -o all_federated_repos_in_source.txt all_federated_repos_in_source.txt
+```
+
+Then reference the generated file in your config:
+```yaml
+transfer:
+  include_repos_file: "all_local_repos_in_source.txt"
+```
+
 ## Basic Usage
 
 ### Run once
