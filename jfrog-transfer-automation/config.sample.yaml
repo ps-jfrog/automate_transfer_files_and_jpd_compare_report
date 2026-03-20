@@ -85,7 +85,7 @@ transfer:
   threads: 8
 
   # Whether to include filestore-related transfer options when invoking the CLI (per product/CLI support).
-  filestore: true
+  filestore: false
 
   # If true, pass ignore-state to transfer-files (full re-sync style behavior per JFrog CLI semantics).
   ignore_state: false
