@@ -15,8 +15,9 @@ comparison report, and optionally sends notifications.
 - Continuous monitoring mode
 
 ## Getting started
-- **Installation**: See `INSTALL.md` for detailed installation and service setup instructions
-- **Quick start**: See `QUICKSTART.md` for usage examples
+- **Installation**: See [INSTALL.md](INSTALL.md) for detailed installation and service setup instructions.
+- **Quick start**: See [QUICKSTART.md](QUICKSTART.md) for common CLI usage examples (run-once, scheduler, validate, etc.).
+- **Beyond the quick start**: `QUICKSTART.md` focuses on typical command-line flows, not every use case. For fuller coverage, also read [SCHEDULER_GUIDE.md](SCHEDULER_GUIDE.md) (scheduled runs and testing catch-up), [TROUBLESHOOTING.md](TROUBLESHOOTING.md), and the commented [config.sample.yaml](config.sample.yaml) (all settings, path resolution, notifications, and report options).
 
 ## Dependencies
 

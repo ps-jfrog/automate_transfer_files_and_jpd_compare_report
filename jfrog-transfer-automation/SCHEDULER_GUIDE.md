@@ -60,8 +60,8 @@ For production use, run the scheduler as a system service (systemd on Linux, lau
 
 1. **Catch-up Check** (if `catch_up_if_missed: true`):
    - Checks for missed schedule windows since the last successful run
-   - Automatically runs catch-up transfers for any missed windows
-   - Logs the number of missed windows found
+   - Logs all missed windows for visibility
+   - Runs a **single** catch-up transfer to cover all missed windows (one delta sync brings everything up to date)
 
 2. **Startup Run** (if `run_on_startup: true`):
    - Runs a transfer immediately
@@ -183,16 +183,18 @@ Follow these steps to test the scheduler functionality:
    This command:
    - Simulates that the last run was 2 days ago
    - Calculates missed schedule windows
-   - Attempts to run catch-up transfers for each missed window
+   - Runs a **single** catch-up transfer to cover all missed windows
 
 3. **Verify catch-up execution**:
    - Check the logs for messages like:
      ```
-     INFO Found 2 missed schedule window(s)
-     INFO Attempting catch-up for window starting at <time>...
+     INFO Found 2 missed schedule window(s):
+     INFO   - 2026-01-25 01:00:00-08:00
+     INFO   - 2026-01-26 01:00:00-08:00
+     INFO catch_up_if_missed is enabled. Running a single catch-up transfer to cover all 2 missed window(s)...
+     INFO Catch-up transfer completed successfully (covered 2 missed window(s))
      ```
-   - Verify that transfers were triggered for the missed windows
-   - Confirm artifacts were transferred
+   - Verify that the transfer was triggered and artifacts were transferred
 
 4. **Upload a new artifact**:
    - Upload a new artifact to app2

@@ -287,7 +287,13 @@ Deliverables: `jfrog-transfer-automation report --config config.yaml`.
    - Add `simulate-missed` command to manually trigger catch-up behavior
    - Allow setting a fake "last run" timestamp for testing
    - Document how to test missed schedule scenarios
-6. Provide Windows guidance:
+6. Optimize catch-up to run a single transfer:
+   - Delta sync via `jf rt transfer-files` covers the full backlog regardless of how many schedule
+     windows were missed, so running one `cmd_run_once` is sufficient.
+   - Both `cmd_simulate_missed` and `cmd_scheduler` catch-up blocks should detect missed windows
+     but only execute a single transfer (instead of one per missed window).
+   - Log all missed windows for visibility, then run one transfer covering them all.
+7. Provide Windows guidance:
    - Use Windows Task Scheduler to run `jfrog-transfer-automation scheduler --config ...` at boot, or run `run-once` daily.
    - Document both patterns.
 
@@ -381,5 +387,6 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Per-repo isolated JFROG_CLI_HOME_DIR strategy
 - [x] Catch-up missed runs functionality
 - [x] Schedule simulation/testing feature (simulate-missed command)
+- [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)
 - [x] TROUBLESHOOTING.md documentation
 - [x] Install scripts (install.ps1, install.sh)

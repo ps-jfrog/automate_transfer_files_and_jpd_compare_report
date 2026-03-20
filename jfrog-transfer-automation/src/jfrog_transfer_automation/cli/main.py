@@ -558,17 +558,14 @@ def cmd_simulate_missed(config, verbose: bool, days_ago: int = 2) -> int:
             logger.info(f"  - {window.start}")
         
         if config.schedule.catch_up_if_missed:
-            logger.info("catch_up_if_missed is enabled. Attempting to run catch-up transfers...")
-            # Don't acquire lock here - let cmd_run_once handle its own locking
-            # This prevents double-locking issues
-            for window in missed:
-                logger.info(f"Attempting catch-up for window starting at {window.start}...")
-                result = cmd_run_once(config, verbose)
-                if result == 0:
-                    logger.info(f"Successfully completed catch-up for {window.start}")
-                else:
-                    logger.warning(f"Catch-up for {window.start} returned non-zero exit code: {result}")
-                    logger.warning("This may be because the lock was held by another process (e.g., scheduler)")
+            logger.info("catch_up_if_missed is enabled. Running a single catch-up transfer "
+                        f"to cover all {len(missed)} missed window(s)...")
+            result = cmd_run_once(config, verbose)
+            if result == 0:
+                logger.info(f"Catch-up transfer completed successfully (covered {len(missed)} missed window(s))")
+            else:
+                logger.warning(f"Catch-up transfer returned non-zero exit code: {result}")
+                logger.warning("This may be because the lock was held by another process (e.g., scheduler)")
         else:
             logger.info("catch_up_if_missed is disabled. Skipping missed runs.")
     else:
@@ -620,11 +617,11 @@ def cmd_scheduler(config, verbose: bool) -> int:
                 config.schedule.timezone,
             )
             if missed:
-                logger.info(f"Found {len(missed)} missed schedule window(s). Running catch-up...")
+                logger.info(f"Found {len(missed)} missed schedule window(s):")
                 for window in missed:
-                    logger.info(f"Catching up missed run from {window.start}")
-                    # cmd_run_once handles its own locking, so we just call it
-                    cmd_run_once(config, verbose)
+                    logger.info(f"  - {window.start}")
+                logger.info("Running a single catch-up transfer to cover all missed windows...")
+                cmd_run_once(config, verbose)
 
     if config.schedule.run_on_startup:
         cmd_run_once(config, verbose)
