@@ -1,56 +1,157 @@
+# =============================================================================
+# JFrog Transfer Automation — sample configuration
+# =============================================================================
+# Copy this file to config.yaml, adjust values for your environment, then run:
+#   jfrog-transfer-automation validate --config config.yaml
+#
+# Path resolution (important):
+# - Paths under report.output_dir and report.repos_file_for_comparison that are
+#   not absolute are resolved relative to the directory containing this YAML file.
+# - transfer.include_repos_file: if the value starts with "./" or has no "/"
+#   (e.g. "repos.txt"), it is resolved relative to this file's directory. If it
+#   contains a path with "/" (e.g. "data/repos.txt"), it is interpreted relative
+#   to the process current working directory when the tool runs.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# schedule — when the scheduler runs transfers (used by: scheduler command)
+# -----------------------------------------------------------------------------
 schedule:
+  # IANA timezone name for interpreting start_time and end_time (e.g. America/Los_Angeles, UTC).
   timezone: "America/Los_Angeles"
+
+  # Daily window start in 24-hour HH:MM local time (required for scheduler / missed-window logic).
   start_time: "01:00"
+
+  # Optional daily window end in HH:MM, or null for no end bound. Used with scheduling logic;
+  # set to null if you only need a single daily start time.
   end_time: "05:00"
+
+  # If true, run one transfer immediately when the scheduler process starts, then continue on schedule.
   run_on_startup: false
+
+  # If true, on scheduler startup, detect schedule windows missed since the last successful run
+  # and attempt catch-up transfers (see also: simulate-missed command for testing).
   catch_up_if_missed: false
 
+# -----------------------------------------------------------------------------
+# jfrog — how the tool invokes JFrog CLI and identifies source/target instances
+# -----------------------------------------------------------------------------
 jfrog:
+  # Executable name or path for the JFrog CLI (commonly "jf").
   jfrog_cli_path: "jf"
+
+  # JFrog CLI server ID for the source Artifactory (e.g. as in `jf c show`).
   source_server_id: "source-server"
+
+  # JFrog CLI server ID for the target Artifactory.
   target_server_id: "target-server"
+
+  # Optional override: source Artifactory base URL. Usually leave null and use CLI config (`jf config`).
   source_url: null
+
+  # Optional override: target Artifactory base URL. Usually leave null and use CLI config.
   target_url: null
+
+  # Optional override: source access token. Usually leave null; CLI config or env JFROG_SOURCE_ACCESS_TOKEN may apply.
   source_access_token: null
+
+  # Optional override: target access token. Usually leave null; CLI config or env JFROG_TARGET_ACCESS_TOKEN may apply.
   target_access_token: null
+
+  # Verify TLS certificates for HTTP calls made by the automation (not necessarily every jf subcommand).
   verify_ssl: true
+
+  # Default HTTP timeout in seconds for API calls used by reporting and related features.
   timeout_seconds: 60
 
+# -----------------------------------------------------------------------------
+# transfer — repository list and jf rt transfer-files behavior
+# -----------------------------------------------------------------------------
 transfer:
+  # Text file listing repository keys to include (one per line; lines starting with # are ignored).
+  # See path resolution notes at the top of this file.
   include_repos_file: "repos.txt"
+
+  # Optional inline list of repo keys instead of a file. If set (non-null), include_repos_file is ignored.
   include_repos_inline: null
-  mode: "single_command"  # Options: "single_command" | "per_repo"
-                         # - single_command: One command for all repos (default, faster for small sets)
-                         # - per_repo: Separate command per repo (better for large sets, with batching and stuck detection)
+
+  # Transfer execution strategy:
+  #   single_command — one `jf rt transfer-files` for all repos (typical for smaller sets).
+  #   per_repo       — one transfer per repo; supports batch_size and stuck_timeout_seconds.
+  mode: "single_command"
+
+  # Number of worker threads for transfer; applied via `jf rt transfer-settings` before transfer-files runs.
   threads: 8
+
+  # Whether to include filestore-related transfer options when invoking the CLI (per product/CLI support).
   filestore: true
+
+  # If true, pass ignore-state to transfer-files (full re-sync style behavior per JFrog CLI semantics).
   ignore_state: false
-  batch_size: 4  # Only used in per_repo mode: number of repos to process in parallel
-  stuck_timeout_seconds: 600  # Only used in per_repo mode: seconds before considering a transfer stuck
+
+  # per_repo mode only: max number of repos to drive in parallel per batch.
+  batch_size: 4
+
+  # per_repo mode only: seconds without progress before treating a repo transfer as stuck for recovery/logging.
+  stuck_timeout_seconds: 600
+
+  # Seconds between polling transfer status while monitoring a run.
   poll_interval_seconds: 60
-  jfrog_cli_home_strategy: "default"  # Options: "default" | "per_repo_isolated"
-                                       # - default: Use shared JFrog CLI home directory
-                                       # - per_repo_isolated: Create isolated CLI home per repo (only for per_repo mode)
-  cli_log_level: "INFO"  # DEBUG, INFO, WARN, ERROR
 
+  # JFrog CLI config home strategy:
+  #   default             — shared CLI home for all operations.
+  #   per_repo_isolated   — isolated home per repo (only meaningful with per_repo mode).
+  jfrog_cli_home_strategy: "default"
+
+  # Log level passed through to JFrog CLI where supported (e.g. DEBUG, INFO, WARN, ERROR).
+  cli_log_level: "INFO"
+
+# -----------------------------------------------------------------------------
+# report — post-transfer comparison report and artifact under output_dir
+# -----------------------------------------------------------------------------
 report:
+  # Master switch: if false, comparison report generation is skipped after transfer.
   enabled: true
-  repo_type: ["local", "federated"]  # Can be a string like "local" or a list like ["local", "federated"]
-  output_dir: "./runs"
-  detailed_comparison: true
-  repos_file_for_comparison: all_repos_to_compare.txt
-  enable_aql_queries: true
-  storage_calculation_wait_seconds: 60  # Wait time (seconds) after calculate_storage() API call
 
+  # Repository types to include in report queries: a single string (e.g. "local") or a list of types.
+  repo_type: ["local", "federated"]
+
+  # Base directory for run folders, locks, last_run_time, next_scheduled_run, and per-run logs/reports.
+  # Relative paths are resolved relative to the directory containing this config file.
+  output_dir: "./runs"
+
+  # If true, produce a more detailed comparison in the generated report.
+  detailed_comparison: true
+
+  # Optional file listing repo keys used specifically for comparison report scope (same line format as include file).
+  # Relative paths are resolved relative to the directory containing this config file.
+  repos_file_for_comparison: all_repos_to_compare.txt
+
+  # If true, use AQL-based queries where the report generator supports them.
+  enable_aql_queries: true
+
+  # Seconds to wait after storage calculation API calls before reading results (tuning for eventual consistency).
+  storage_calculation_wait_seconds: 60
+
+# -----------------------------------------------------------------------------
+# notify — optional email or webhook after a successful report (method selects channel)
+# -----------------------------------------------------------------------------
 notify:
+  # Notification channel: none | email | webhook (only configured channels take effect).
   method: "none"
+
   email:
     smtp_host: ""
     smtp_port: 587
     smtp_user: ""
+    # Name of environment variable holding the SMTP password (avoid storing secrets in this file).
     smtp_password_env: "SMTP_PASSWORD"
     to: ["team@example.com"]
+    # Sender address (YAML key is `from`; maps to internal from_address).
     from: "jfrog-automation@example.com"
+
   webhook:
     url: ""
+    # Optional HTTP headers as key/value map (e.g. Authorization) for the webhook POST.
     headers: {}
