@@ -109,8 +109,51 @@ class TransferRunner:
             run_base = Path(self.config.report.output_dir).expanduser().resolve()
             repo_home = run_base / "cli_homes" / repo
             repo_home.mkdir(parents=True, exist_ok=True)
+            self._bootstrap_cli_home(repo_home)
             return repo_home
         return None
+
+    def _bootstrap_cli_home(self, cli_home_dir: Path) -> None:
+        """Import source and target server configs into an isolated CLI home if not already present.
+        
+        Exports server configurations from the default CLI home (~/.jfrog) and imports
+        them into the isolated directory so that jf rt transfer-files can find the
+        configured server IDs.
+        """
+        env = os.environ.copy()
+        env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+
+        # Check if source server is already configured in this home
+        check = self.jf_cli.run(
+            ["c", "show", self.config.jfrog.source_server_id], env=env
+        )
+        if check.returncode == 0:
+            logger.debug(f"CLI home {cli_home_dir} already bootstrapped, skipping")
+            return
+
+        logger.info(f"Bootstrapping CLI home: {cli_home_dir}")
+        for server_id in [
+            self.config.jfrog.source_server_id,
+            self.config.jfrog.target_server_id,
+        ]:
+            # Export from default home (no JFROG_CLI_HOME_DIR override)
+            export_result = self.jf_cli.run(["c", "export", server_id])
+            if export_result.returncode != 0 or not export_result.stdout:
+                raise RuntimeError(
+                    f"Failed to export server config for '{server_id}' from default CLI home. "
+                    f"Ensure 'jf c show {server_id}' works. Error: {export_result.stderr}"
+                )
+
+            # Import into isolated home
+            import_result = self.jf_cli.run(
+                ["c", "import", export_result.stdout.strip()], env=env
+            )
+            if import_result.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to import server config for '{server_id}' into {cli_home_dir}. "
+                    f"Error: {import_result.stderr}"
+                )
+            logger.info(f"Imported server config '{server_id}' into {cli_home_dir}")
 
     def _check_stuck(self, log_file: Path) -> bool:
         """Check if transfer is stuck by examining log file modification time."""

@@ -23,23 +23,49 @@ pip install -e .
 ## Configure
 Copy `config.sample.yaml` to `config.yaml` and update values.
 
+### Minimum Configuration (Recommended)
+
+Most customers use `per_repo` mode with isolated CLI homes. At a minimum, configure these settings:
+
+```yaml
+schedule:
+  timezone: "America/Los_Angeles"        # Your IANA timezone
+  start_time: "01:00"                    # Daily start time (24-hour HH:MM)
+
+jfrog:
+  jfrog_cli_path: "jf"                   # Path to JFrog CLI
+  source_server_id: "source-server"      # jf config server ID for source
+  target_server_id: "target-server"      # jf config server ID for target
+
+transfer:
+  include_repos_file: "repos.txt"        # File with repo keys (one per line)
+  mode: "per_repo"                       # Per-repo transfers with isolation
+  threads: 8                             # Transfer worker threads
+  batch_size: 4                          # Repos processed in parallel
+  stuck_timeout_seconds: 600             # Restart if stuck for 10 minutes
+  jfrog_cli_home_strategy: "per_repo_isolated"  # Isolated CLI home per repo
+  cli_log_level: "INFO"                  # JFrog CLI log level
+```
+
+All other settings have sensible defaults. See `config.sample.yaml` for the full list with comments.
+
 ### Transfer Mode Selection
 
 Choose the appropriate transfer mode based on your needs:
 
-**Single Command Mode (Default)** - Best for small to medium repository sets:
+**Single Command Mode** - Best for small to medium repository sets:
 ```yaml
 transfer:
   mode: "single_command"
 ```
 
-**Per-Repo Mode** - Best for large repository sets with advanced features:
+**Per-Repo Mode (Recommended)** - Best for large repository sets with advanced features:
 ```yaml
 transfer:
   mode: "per_repo"
   batch_size: 4
   stuck_timeout_seconds: 600
-  jfrog_cli_home_strategy: "per_repo_isolated"  # Optional: for isolation
+  jfrog_cli_home_strategy: "per_repo_isolated"
 ```
 
 See `README.md` for detailed documentation on transfer modes and `jfrog_cli_home_strategy`.

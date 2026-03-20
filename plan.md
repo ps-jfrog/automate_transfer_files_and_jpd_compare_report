@@ -246,6 +246,18 @@ Deliverables: unit tests with mocked subprocess/HTTP.
      ephemeral per-run timestamped directory so that JFrog CLI transfer state is preserved
      across scheduled runs (enabling proper delta sync).
    - Each repo still gets its own JFROG_CLI_HOME_DIR for concurrency safety within a run.
+7. Bootstrap isolated CLI homes with server configurations:
+   - When `jfrog_cli_home_strategy: "per_repo_isolated"` is used, the isolated CLI home
+     directories start empty and have no JFrog CLI server configurations, causing
+     `Server ID '...' does not exist` errors.
+   - On first use of an isolated CLI home, export the `jfrog.source_server_id` and
+     `jfrog.target_server_id` configs from the default CLI home (`~/.jfrog`) using
+     `jf c export <server_id>`, then import them into the isolated home using
+     `jf c import <token>` with `JFROG_CLI_HOME_DIR` set to the isolated directory.
+   - Skip the bootstrap if the server configs are already present (check via `jf c show`
+     with `JFROG_CLI_HOME_DIR` set) so it only runs once per repo.
+   - Add a `_bootstrap_cli_home(cli_home_dir)` method to `TransferRunner` and call it
+     from `_get_cli_home_dir` (or `start_transfer`) before executing any transfer command.
 
 Deliverables: `jfrog-transfer-automation run-once --config config.yaml`.
 
@@ -391,6 +403,7 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Stuck detection and restart logic
 - [x] Per-repo isolated JFROG_CLI_HOME_DIR strategy
 - [x] Persist per_repo_isolated CLI homes across runs for delta sync state preservation
+- [x] Bootstrap isolated CLI homes with source/target server configs on first use
 - [x] Catch-up missed runs functionality
 - [x] Schedule simulation/testing feature (simulate-missed command)
 - [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)
