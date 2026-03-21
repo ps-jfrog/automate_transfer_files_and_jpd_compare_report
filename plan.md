@@ -274,8 +274,36 @@ Deliverables: unit tests with mocked subprocess/HTTP.
    - Safe to run while a transfer is in progress; changes take effect on the next
      transfer chunk.
 
+10. Adapt `status`, `stop`, `resume`, and `monitor` commands for `per_repo_isolated`:
+    - All four commands currently run `jf rt transfer-files --status` / `--stop` against
+      the **default** CLI home (`~/.jfrog`), which has no knowledge of transfers running
+      in isolated per-repo CLI homes.  They report "Not running" or fail to stop anything.
+    - **`status`** (`cmd_status` + `runner.status()`): iterate over each
+      `<output_dir>/cli_homes/<repo>/` and run `--status` with `JFROG_CLI_HOME_DIR` set.
+      Aggregate per-repo results into a combined status display.
+    - **`stop`** (`cmd_stop` + `runner.stop()`): send `--stop` to each isolated CLI home
+      so running per-repo transfers actually receive the signal.
+    - **`resume`** (`cmd_resume` + `runner.resume()`): currently calls
+      `start_transfer(repos)` with no `cli_home_dir`, bypassing per-repo mode entirely.
+      Should delegate to `run_and_monitor()` which already handles per-repo mode correctly.
+    - **`monitor`** (`cmd_monitor`): polls `--status` against the default home in a loop.
+      Same fix as `status` — query each isolated CLI home per iteration.
+    - **`runner.status()` inside `_run_per_repo_mode`**: the internal monitoring loop
+      calls `self.status()` against the default home; should accept an optional
+      `cli_home_dir` and pass it when checking per-repo transfer status.
+    - **`clear-lock`**: add a new CLI command that removes the `.lock` file and resets
+      `current_run.json` when no process actually holds the lock.  Useful when a crashed
+      run leaves a stale lock file (especially on NFS or platforms where advisory locks
+      are not automatically cleaned up).  Should verify that no process currently holds
+      the lock before removing, and warn if the lock is still held.
+    - Commands that are already correct: `run-once` (delegates to `_run_per_repo_mode`),
+      `validate` (checks default home for server configs — correct), `report` (REST API,
+      no CLI home dependency), `scheduler`/`simulate-missed` (delegate to `run-once`),
+      `update-threads` (already adapted).
+
 Deliverables: `jfrog-transfer-automation run-once --config config.yaml`,
-`jfrog-transfer-automation update-threads --config config.yaml [--threads N]`.
+`jfrog-transfer-automation update-threads --config config.yaml [--threads N]`,
+`jfrog-transfer-automation clear-lock --config config.yaml`.
 
 ---
 
@@ -361,6 +389,7 @@ Deliverables: `notify` module + config examples.
    - `scheduler` (daily loop)
    - `simulate-missed` (simulate missed schedule for testing)
    - `update-threads` (dynamically change transfer thread count, even mid-run)
+   - `clear-lock` (remove stale lock file and reset run state after a crash)
 2. Docs:
    - `QUICKSTART.md`: Windows instructions + sample `config.yaml`
    - `README.md`: overview, assumptions, security notes
@@ -423,6 +452,8 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Bootstrap isolated CLI homes with source/target server configs on first use
 - [x] Fix `_adjust_threads` to respect isolated CLI home directories (JFROG_CLI_HOME_DIR)
 - [x] `update-threads` CLI command for dynamic thread changes (even mid-run)
+- [x] Adapt `status`, `stop`, `resume`, `monitor` commands for `per_repo_isolated` strategy
+- [x] `clear-lock` CLI command to remove stale lock files after a crash
 - [x] Catch-up missed runs functionality
 - [x] Schedule simulation/testing feature (simulate-missed command)
 - [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)

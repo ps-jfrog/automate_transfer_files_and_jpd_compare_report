@@ -50,9 +50,18 @@ Common issues and solutions for `jfrog-transfer-automation`.
 **Problem**: Another run is already active (lock file exists).
 
 **Solution**:
-- Check `runs/.lock` - if stale, remove it manually
-- Check `runs/current_run.json` for run status
-- Wait for current run to complete, or stop it: `jfrog-transfer-automation stop`
+- Wait for the current run to complete, or stop it: `jfrog-transfer-automation stop --config config.yaml`
+- If the process crashed and left a stale lock, use the built-in command to clean up:
+  ```bash
+  jfrog-transfer-automation clear-lock --config config.yaml
+  ```
+  This verifies no process actually holds the lock before removing it, and resets
+  `current_run.json` if it still shows "running".
+- As a last resort, remove the lock file manually:
+  ```bash
+  rm ./runs/.lock
+  rm ./runs/current_run.json   # optional, to reset run state
+  ```
 
 ## Schedule Issues
 

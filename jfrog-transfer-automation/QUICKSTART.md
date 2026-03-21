@@ -204,6 +204,11 @@ jfrog-transfer-automation update-threads --config config.yaml
 jfrog-transfer-automation update-threads --config config.yaml --threads 16
 ```
 
+### Clear stale lock (after a crash)
+```bash
+jfrog-transfer-automation clear-lock --config config.yaml
+```
+
 ### Generate report only
 ```bash
 jfrog-transfer-automation report --config config.yaml

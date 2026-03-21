@@ -163,26 +163,34 @@ class TransferRunner:
                 )
             logger.info(f"Imported server config '{server_id}' into {cli_home_dir}")
 
+    def _get_all_cli_homes(self) -> List[Path]:
+        """Return all per-repo isolated CLI home directories that exist on disk."""
+        cli_homes_base = Path(self.config.report.output_dir).expanduser().resolve() / "cli_homes"
+        if not cli_homes_base.is_dir():
+            return []
+        return sorted(d for d in cli_homes_base.iterdir() if d.is_dir())
+
+    def _is_per_repo_isolated(self) -> bool:
+        return self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated"
+
     def update_threads(self, thread_count: int) -> dict:
         """Apply thread count to all relevant CLI homes (default and/or per-repo isolated).
 
-        Re-reads the output directory to discover isolated CLI homes and applies
-        the setting to each one.  Returns a summary dict with per-home results.
+        Discovers isolated CLI homes and applies the setting to each one.
+        Returns a summary dict with per-home results.
         """
         results: dict = {}
 
-        if self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated":
-            cli_homes_base = Path(self.config.report.output_dir).expanduser().resolve() / "cli_homes"
-            if cli_homes_base.is_dir():
-                for repo_dir in sorted(cli_homes_base.iterdir()):
-                    if repo_dir.is_dir():
-                        try:
-                            self._adjust_threads(thread_count, cli_home_dir=repo_dir)
-                            results[repo_dir.name] = "ok"
-                        except Exception as e:
-                            results[repo_dir.name] = f"error: {e}"
-            else:
-                logger.warning(f"No cli_homes directory found at {cli_homes_base}")
+        if self._is_per_repo_isolated():
+            cli_homes = self._get_all_cli_homes()
+            if not cli_homes:
+                logger.warning("No cli_homes directories found")
+            for repo_dir in cli_homes:
+                try:
+                    self._adjust_threads(thread_count, cli_home_dir=repo_dir)
+                    results[repo_dir.name] = "ok"
+                except Exception as e:
+                    results[repo_dir.name] = f"error: {e}"
         else:
             try:
                 self._adjust_threads(thread_count)
@@ -273,10 +281,13 @@ class TransferRunner:
         self.start_transfer([repo], dry_run=dry_run, cli_home_dir=cli_home_dir)
         return log_file
 
-    def status(self) -> str:
-        """Check transfer status. Requires server IDs: jf rt transfer-files --status <source-server-id> <target-server-id>"""
-        logger.debug("Checking transfer status...")
-        # Status command requires server IDs: jf rt transfer-files --status <source> <target>
+    def status(self, cli_home_dir: Optional[Path] = None) -> str:
+        """Check transfer status for a single CLI home.
+
+        When cli_home_dir is provided, sets JFROG_CLI_HOME_DIR so the status
+        check targets the correct (possibly isolated) CLI home.
+        """
+        logger.debug(f"Checking transfer status (cli_home_dir={cli_home_dir})...")
         args = [
             "rt",
             "transfer-files",
@@ -284,16 +295,38 @@ class TransferRunner:
             self.config.jfrog.source_server_id,
             self.config.jfrog.target_server_id,
         ]
+        env: dict | None = None
+        if cli_home_dir:
+            env = os.environ.copy()
+            env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+
         logger.debug(f"Status command: {' '.join([self.jf_cli.jfrog_cli_path] + args)}")
-        result = self.jf_cli.run(args)
+        result = self.jf_cli.run(args, env=env)
         logger.debug(f"Status check return code: {result.returncode}")
         if result.returncode != 0:
             logger.warning(f"Status check failed: {result.stderr}")
             return result.stderr or "Status failed"
         status_text = result.stdout
         logger.debug(f"Status check successful (response length: {len(status_text)} chars)")
-        logger.debug(f"Full status output: {status_text}")
         return status_text
+
+    def status_all(self) -> dict:
+        """Check transfer status across all relevant CLI homes.
+
+        Returns a dict mapping CLI home name to status string.
+        For 'default' strategy returns {'default': <status>}.
+        For 'per_repo_isolated' returns {<repo>: <status>, ...}.
+        """
+        results: dict = {}
+        if self._is_per_repo_isolated():
+            cli_homes = self._get_all_cli_homes()
+            if not cli_homes:
+                logger.warning("No cli_homes directories found")
+            for repo_dir in cli_homes:
+                results[repo_dir.name] = self.status(cli_home_dir=repo_dir)
+        else:
+            results["default"] = self.status()
+        return results
     
     def _is_transfer_complete(self, status: str) -> bool:
         """Check if transfer is complete based on status output.
@@ -352,19 +385,40 @@ class TransferRunner:
         logger.warning("No active transfer indicators found, assuming transfer may be complete")
         return True  # Changed to True - if no active indicators, assume complete
 
-    def stop(self) -> str:
-        result = self.jf_cli.run(["rt", "transfer-files", "--stop"])
+    def stop(self, cli_home_dir: Optional[Path] = None) -> str:
+        """Stop a running transfer in a single CLI home."""
+        env: dict | None = None
+        if cli_home_dir:
+            env = os.environ.copy()
+            env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+        result = self.jf_cli.run(["rt", "transfer-files", "--stop"], env=env)
         if result.returncode != 0:
             raise RuntimeError(result.stderr or "Failed to stop transfer-files")
         return result.stdout
 
-    def resume(self, repos: List[str], dry_run: bool = False) -> None:
-        """Resume a stopped transfer. This is essentially the same as start_transfer."""
-        if dry_run:
-            print("Would resume transfer with:")
-            print(f"  Repositories: {', '.join(repos)}")
-            return
-        self.start_transfer(repos, dry_run=False)
+    def stop_all(self) -> dict:
+        """Stop running transfers across all relevant CLI homes.
+
+        Returns a dict mapping CLI home name to result string.
+        """
+        results: dict = {}
+        if self._is_per_repo_isolated():
+            cli_homes = self._get_all_cli_homes()
+            if not cli_homes:
+                logger.warning("No cli_homes directories found")
+            for repo_dir in cli_homes:
+                try:
+                    output = self.stop(cli_home_dir=repo_dir)
+                    results[repo_dir.name] = output or "stopped"
+                except Exception as e:
+                    results[repo_dir.name] = f"error: {e}"
+        else:
+            try:
+                output = self.stop()
+                results["default"] = output or "stopped"
+            except Exception as e:
+                results["default"] = f"error: {e}"
+        return results
 
     def _run_per_repo_mode(
         self,
@@ -428,7 +482,7 @@ class TransferRunner:
                 if end_time and current_time >= end_time:
                     logger.info("End time reached, stopping transfers")
                     try:
-                        self.stop()
+                        self.stop_all()
                     except Exception:
                         pass
                     break
@@ -463,11 +517,11 @@ class TransferRunner:
                             failed_repos.append(repo)
                         continue
                     
-                    # Check if completed - in per-repo mode, we check if transfer is still running
-                    # If no transfer is running and log file exists, assume completed
+                    # Check if completed — query the repo's own CLI home for status
                     logger.debug(f"Checking status for {repo}...")
-                    status = self.status()
-                    if "no running transfer" in status.lower():
+                    cli_home = self._get_cli_home_dir(repo, run_dir)
+                    status = self.status(cli_home_dir=cli_home)
+                    if self._is_transfer_complete(status):
                         # Transfer finished, check if this repo's transfer completed
                         if repo not in completed_repos:
                             completed_repos.append(repo)

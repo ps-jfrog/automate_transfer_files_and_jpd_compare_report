@@ -68,7 +68,10 @@ def parse_args() -> argparse.Namespace:
         help="Update transfer thread count (reads from config or --threads override)")
     update_threads_parser.add_argument("--threads", type=int, default=None,
         help="Thread count override (default: use transfer.threads from config)")
-    
+
+    clear_lock_parser = subparsers.add_parser("clear-lock", parents=[parent_parser],
+        help="Remove stale lock file and reset run state after a crash")
+
     args = parser.parse_args()
     
     # Ensure config is set (required by subcommands via parent_parser)
@@ -392,17 +395,20 @@ def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool 
 
 
 def cmd_status(config) -> int:
+    """Check transfer status, querying each per-repo CLI home when applicable."""
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-    # Status command requires server IDs: jf rt transfer-files --status <source> <target>
-    status = jf_cli.run([
-        "rt",
-        "transfer-files",
-        "--status",
-        config.jfrog.source_server_id,
-        config.jfrog.target_server_id,
-    ])
+    runner = TransferRunner(config, jf_cli)
+
+    results = runner.status_all()
+
     print("JFrog Transfer Status:")
-    print(status.stdout or status.stderr)
+    for name, status_text in results.items():
+        if len(results) > 1:
+            print(f"\n  [{name}]")
+            for line in (status_text or "").splitlines():
+                print(f"    {line}")
+        else:
+            print(status_text or "(no output)")
 
     run_base = Path(config.report.output_dir).expanduser().resolve()
     current = _read_current_run(run_base)
@@ -411,16 +417,24 @@ def cmd_status(config) -> int:
         print(json.dumps(current, indent=2))
     else:
         print("\nNo current run information found.")
-    
+
     return 0
 
 
 def cmd_stop(config) -> int:
+    """Stop running transfers, sending stop to each per-repo CLI home when applicable."""
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-    result = jf_cli.run(["rt", "transfer-files", "--stop"])
+    runner = TransferRunner(config, jf_cli)
+
     print("Stopping transfer...")
-    print(result.stdout or result.stderr)
-    
+    results = runner.stop_all()
+
+    for name, output in results.items():
+        if len(results) > 1:
+            print(f"  [{name}] {output}")
+        else:
+            print(output)
+
     run_base = Path(config.report.output_dir).expanduser().resolve()
     current = _read_current_run(run_base)
     if current:
@@ -428,7 +442,56 @@ def cmd_stop(config) -> int:
         current["stopped_at"] = time.time()
         _write_current_run(run_base, current)
         print("Run status updated to 'stopped'")
-    
+
+    return 0
+
+
+def cmd_clear_lock(config) -> int:
+    """Remove a stale lock file and reset current_run.json after a crash.
+
+    Attempts to acquire the lock first.  If successful the lock is not truly
+    held by another process and it is safe to clean up.  If the lock cannot
+    be acquired, another run is genuinely active and the user is warned.
+    """
+    run_base = Path(config.report.output_dir).expanduser().resolve()
+    lock_path = run_base / ".lock"
+    current_run_path = run_base / "current_run.json"
+
+    lock = RunLock(lock_path)
+    if not lock.acquire():
+        print("WARNING: The lock is currently held by another process.")
+        print("A transfer may still be running. Use 'stop' first if you want to stop it.")
+        return 1
+
+    # Lock acquired — no process is genuinely using it, so it's stale
+    lock.release()
+
+    removed_any = False
+
+    if lock_path.exists():
+        lock_path.unlink()
+        print(f"  ✓ Removed stale lock file: {lock_path}")
+        removed_any = True
+
+    current = None
+    if current_run_path.exists():
+        current = _read_current_run(run_base)
+        if current and current.get("status") == "running":
+            _write_current_run(run_base, {
+                "status": "cleared_stale",
+                "cleared_at": time.time(),
+                "previous_status": current,
+            })
+            print(f"  ✓ Reset stale 'running' status in: {current_run_path}")
+            removed_any = True
+        else:
+            print(f"  - current_run.json status is '{current.get('status') if current else 'N/A'}' (not stale)")
+
+    if not removed_any:
+        print("No stale lock or run state found. Nothing to clear.")
+    else:
+        print("\nStale state cleared. You can now run 'run-once' or 'scheduler' again.")
+
     return 0
 
 
@@ -470,44 +533,40 @@ def cmd_update_threads(config, threads: int | None = None) -> int:
 
 
 def cmd_resume(config, verbose: bool, dry_run: bool = False, background: bool = False, config_path: str = "") -> int:
-    """Resume a stopped transfer."""
+    """Resume a stopped transfer.
+
+    Delegates to run_and_monitor() which handles both single_command and
+    per_repo modes correctly (including per_repo_isolated CLI homes).
+    """
     if background:
         return _run_in_background(config_path, verbose, dry_run, command="resume")
-    
+
     run_dir = _run_dir(config.report.output_dir)
     logger = setup_logging(run_dir, verbose)
-    
+
     run_base = Path(config.report.output_dir).expanduser().resolve()
     lock = RunLock(run_base / ".lock")
     if not lock.acquire():
         logger.info("Run in progress. Cannot resume while another run is active.")
         return 1
-    
+
     try:
-        repos = load_repos(
-            config.transfer.include_repos_file,
-            config.transfer.include_repos_inline,
-        )
-        
         transfer = TransferRunner(config, JFrogCLI(config.jfrog.jfrog_cli_path))
-        
+
         if dry_run:
             logger.info("Dry run: Would resume transfer")
-            transfer.resume(repos, dry_run=True)
+            transfer.run_and_monitor(run_dir, end_time=_end_timestamp(config), dry_run=True)
             return 0
-        
+
         logger.info("Resuming transfer...")
-        transfer.resume(repos, dry_run=False)
-        
         _write_current_run(
             run_base,
             {"status": "running", "resumed_at": time.time(), "run_dir": str(run_dir)},
         )
-        
-        # Monitor the transfer
+
         transfer_result = transfer.run_and_monitor(run_dir, end_time=_end_timestamp(config), dry_run=False)
         logger.info("Transfer completed in %.1fs", transfer_result.ended_at - transfer_result.started_at)
-        
+
         if config.report.enabled:
             source_client, target_client = _resolve_clients(config)
             report_dir = run_dir / "reports"
@@ -526,46 +585,46 @@ def cmd_resume(config, verbose: bool, dry_run: bool = False, background: bool = 
             )
             logger.info("Report generated: %s", result.report_path)
             _notify(config, result.report_path, logger)
-        
+
         _write_current_run(
             run_base,
             {"status": "completed", "ended_at": time.time(), "run_dir": str(run_dir)},
         )
-        
+
         return 0
     finally:
         lock.release()
 
 
 def cmd_monitor(config, interval: int = 10) -> int:
-    """Monitor transfer progress continuously."""
+    """Monitor transfer progress continuously, querying per-repo CLI homes when applicable."""
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
+    runner = TransferRunner(config, jf_cli)
     run_base = Path(config.report.output_dir).expanduser().resolve()
-    
+
     print(f"Monitoring transfer (interval: {interval}s). Press Ctrl+C to stop monitoring...")
     print("(Note: Transfer will continue running even if monitoring stops)\n")
-    
+
     try:
         while True:
-            # Check JFrog transfer status (requires server IDs)
-            status = jf_cli.run([
-                "rt",
-                "transfer-files",
-                "--status",
-                config.jfrog.source_server_id,
-                config.jfrog.target_server_id,
-            ])
+            results = runner.status_all()
+
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Transfer Status:")
-            print(status.stdout or status.stderr)
-            
-            # Check current run info
+            for name, status_text in results.items():
+                if len(results) > 1:
+                    print(f"\n  [{name}]")
+                    for line in (status_text or "").splitlines():
+                        print(f"    {line}")
+                else:
+                    print(status_text or "(no output)")
+
             current = _read_current_run(run_base)
             if current:
                 print("\nCurrent Run Info:")
                 print(json.dumps(current, indent=2))
-            
+
             print("\n" + "=" * 60 + "\n")
-            
+
             time.sleep(interval)
     except KeyboardInterrupt:
         print("\nMonitoring stopped. Transfer continues in background.")
@@ -750,6 +809,8 @@ def main() -> int:
     if command == "update-threads":
         threads_override = getattr(args, "threads", None)
         return cmd_update_threads(config, threads=threads_override)
+    if command == "clear-lock":
+        return cmd_clear_lock(config)
 
     raise RuntimeError(f"Unknown command: {command}")
 
