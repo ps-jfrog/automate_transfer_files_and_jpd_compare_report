@@ -37,37 +37,45 @@ class TransferRunner:
     def _include_repos_arg(self, repos: List[str]) -> str:
         return ";".join(repos)
 
-    def _adjust_threads(self, thread_count: int, dry_run: bool = False) -> None:
+    def _adjust_threads(
+        self,
+        thread_count: int,
+        dry_run: bool = False,
+        cli_home_dir: Optional[Path] = None,
+    ) -> None:
         """Adjust transfer threads using non-interactive JFrog CLI.
         
         Uses 'jf rt transfer-settings' to set the thread count.
         This must be done before starting transfer-files.
+        When cli_home_dir is provided, sets JFROG_CLI_HOME_DIR so the setting
+        is applied to the correct (possibly isolated) CLI home.
         """
-        logger.debug(f"=== _adjust_threads: Setting threads to {thread_count} ===")
+        logger.debug(f"=== _adjust_threads: Setting threads to {thread_count} (cli_home_dir={cli_home_dir}) ===")
         if dry_run:
             print(f"  Would set transfer threads to {thread_count} using: echo {thread_count} | {self.jf_cli.jfrog_cli_path} rt transfer-settings")
+            if cli_home_dir:
+                print(f"  With JFROG_CLI_HOME_DIR={cli_home_dir}")
             logger.debug("Dry run: Would adjust threads")
             return
         
         try:
-            # Use echo to pipe the thread count to transfer-settings
-            # This works on both Unix and Windows (with proper shell)
+            env = os.environ.copy()
+            if cli_home_dir:
+                env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+
             if sys.platform == "win32":
-                # Windows: use cmd
                 cmd = f'echo {thread_count} | {self.jf_cli.jfrog_cli_path} rt transfer-settings'
                 logger.debug(f"Windows: Executing: {cmd}")
-                subprocess.run(cmd, shell=True, check=True)
+                subprocess.run(cmd, shell=True, check=True, env=env)
             else:
-                # Unix: use bash
                 cmd = ['bash', '-c', f'echo {thread_count} | {self.jf_cli.jfrog_cli_path} rt transfer-settings']
                 logger.debug(f"Unix: Executing: {' '.join(cmd)}")
-                subprocess.run(cmd, check=True)
-            logger.info(f"Set transfer threads to {thread_count}")
+                subprocess.run(cmd, check=True, env=env)
+            logger.info(f"Set transfer threads to {thread_count} (cli_home_dir={cli_home_dir})")
             logger.debug("Thread adjustment completed successfully")
         except subprocess.CalledProcessError as e:
             logger.warning(f"Failed to set transfer threads to {thread_count}: {e}")
             logger.debug(f"Thread adjustment failed, but continuing (non-fatal)")
-            # Don't fail the transfer if thread setting fails, just log a warning
 
     def _build_transfer_args(self, repos: List[str]) -> List[str]:
         """Build the transfer-files command arguments.
@@ -155,6 +163,35 @@ class TransferRunner:
                 )
             logger.info(f"Imported server config '{server_id}' into {cli_home_dir}")
 
+    def update_threads(self, thread_count: int) -> dict:
+        """Apply thread count to all relevant CLI homes (default and/or per-repo isolated).
+
+        Re-reads the output directory to discover isolated CLI homes and applies
+        the setting to each one.  Returns a summary dict with per-home results.
+        """
+        results: dict = {}
+
+        if self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated":
+            cli_homes_base = Path(self.config.report.output_dir).expanduser().resolve() / "cli_homes"
+            if cli_homes_base.is_dir():
+                for repo_dir in sorted(cli_homes_base.iterdir()):
+                    if repo_dir.is_dir():
+                        try:
+                            self._adjust_threads(thread_count, cli_home_dir=repo_dir)
+                            results[repo_dir.name] = "ok"
+                        except Exception as e:
+                            results[repo_dir.name] = f"error: {e}"
+            else:
+                logger.warning(f"No cli_homes directory found at {cli_homes_base}")
+        else:
+            try:
+                self._adjust_threads(thread_count)
+                results["default"] = "ok"
+            except Exception as e:
+                results["default"] = f"error: {e}"
+
+        return results
+
     def _check_stuck(self, log_file: Path) -> bool:
         """Check if transfer is stuck by examining log file modification time."""
         if not log_file.exists():
@@ -175,8 +212,8 @@ class TransferRunner:
         logger.debug(f"Repos: {repos}, dry_run: {dry_run}, cli_home_dir: {cli_home_dir}")
         
         # Set thread count before starting transfer (threads are not a command option)
-        logger.debug(f"Adjusting threads to {self.config.transfer.threads}...")
-        self._adjust_threads(self.config.transfer.threads, dry_run=dry_run)
+        logger.debug(f"Adjusting threads to {self.config.transfer.threads} (cli_home_dir={cli_home_dir})...")
+        self._adjust_threads(self.config.transfer.threads, dry_run=dry_run, cli_home_dir=cli_home_dir)
         logger.debug("Thread adjustment completed")
         
         logger.debug("Building transfer arguments...")

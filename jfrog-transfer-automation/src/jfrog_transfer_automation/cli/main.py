@@ -64,6 +64,11 @@ def parse_args() -> argparse.Namespace:
     simulate_parser = subparsers.add_parser("simulate-missed", parents=[parent_parser])
     simulate_parser.add_argument("--days-ago", type=int, default=2, help="Simulate last run N days ago (default: 2)")
     
+    update_threads_parser = subparsers.add_parser("update-threads", parents=[parent_parser],
+        help="Update transfer thread count (reads from config or --threads override)")
+    update_threads_parser.add_argument("--threads", type=int, default=None,
+        help="Thread count override (default: use transfer.threads from config)")
+    
     args = parser.parse_args()
     
     # Ensure config is set (required by subcommands via parent_parser)
@@ -427,6 +432,43 @@ def cmd_stop(config) -> int:
     return 0
 
 
+def cmd_update_threads(config, threads: int | None = None) -> int:
+    """Update transfer thread count across all relevant CLI homes.
+
+    Re-reads the thread count from config (or uses --threads override) and
+    applies it via 'jf rt transfer-settings' to the default CLI home and/or
+    every per-repo isolated CLI home directory.  Safe to run while a transfer
+    is in progress — changes take effect on the next transfer chunk.
+    """
+    thread_count = threads if threads is not None else config.transfer.threads
+    strategy = config.transfer.jfrog_cli_home_strategy
+
+    print(f"Updating transfer threads to {thread_count} (strategy: {strategy})")
+
+    jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
+    runner = TransferRunner(config, jf_cli)
+    results = runner.update_threads(thread_count)
+
+    if not results:
+        print("No CLI homes found to update. Have you run a transfer yet?")
+        return 1
+
+    errors = 0
+    for name, status in results.items():
+        if status == "ok":
+            print(f"  ✓ {name}: threads set to {thread_count}")
+        else:
+            print(f"  ✗ {name}: {status}")
+            errors += 1
+
+    if errors:
+        print(f"\n{errors} CLI home(s) failed to update.")
+        return 1
+
+    print(f"\nSuccessfully updated threads to {thread_count} across {len(results)} CLI home(s).")
+    return 0
+
+
 def cmd_resume(config, verbose: bool, dry_run: bool = False, background: bool = False, config_path: str = "") -> int:
     """Resume a stopped transfer."""
     if background:
@@ -705,6 +747,9 @@ def main() -> int:
     if command == "simulate-missed":
         days_ago = getattr(args, "days_ago", 2)
         return cmd_simulate_missed(config, args.verbose, days_ago=days_ago)
+    if command == "update-threads":
+        threads_override = getattr(args, "threads", None)
+        return cmd_update_threads(config, threads=threads_override)
 
     raise RuntimeError(f"Unknown command: {command}")
 

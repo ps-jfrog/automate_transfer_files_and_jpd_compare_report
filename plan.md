@@ -258,8 +258,24 @@ Deliverables: unit tests with mocked subprocess/HTTP.
      with `JFROG_CLI_HOME_DIR` set) so it only runs once per repo.
    - Add a `_bootstrap_cli_home(cli_home_dir)` method to `TransferRunner` and call it
      from `_get_cli_home_dir` (or `start_transfer`) before executing any transfer command.
+8. Fix `_adjust_threads` to respect isolated CLI home directories:
+   - `_adjust_threads` runs `jf rt transfer-settings` via raw `subprocess.run` without
+     setting `JFROG_CLI_HOME_DIR`, so thread settings are applied to the default
+     `~/.jfrog` home while the actual transfer runs in the isolated per-repo home.
+   - Add an optional `cli_home_dir` parameter to `_adjust_threads` and set
+     `JFROG_CLI_HOME_DIR` in the subprocess environment when provided.
+   - Update `start_transfer` to forward its `cli_home_dir` argument to `_adjust_threads`.
+9. Add `update-threads` CLI command for dynamic thread changes:
+   - Add an `update_threads(thread_count)` method to `TransferRunner` that discovers all
+     relevant CLI home directories (default or per-repo isolated) and calls
+     `_adjust_threads` for each one.
+   - Add `cmd_update_threads` in `cli/main.py` with an optional `--threads` flag to
+     override the config value for a one-off change.
+   - Safe to run while a transfer is in progress; changes take effect on the next
+     transfer chunk.
 
-Deliverables: `jfrog-transfer-automation run-once --config config.yaml`.
+Deliverables: `jfrog-transfer-automation run-once --config config.yaml`,
+`jfrog-transfer-automation update-threads --config config.yaml [--threads N]`.
 
 ---
 
@@ -344,6 +360,7 @@ Deliverables: `notify` module + config examples.
    - `report` (generate report only)
    - `scheduler` (daily loop)
    - `simulate-missed` (simulate missed schedule for testing)
+   - `update-threads` (dynamically change transfer thread count, even mid-run)
 2. Docs:
    - `QUICKSTART.md`: Windows instructions + sample `config.yaml`
    - `README.md`: overview, assumptions, security notes
@@ -404,6 +421,8 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Per-repo isolated JFROG_CLI_HOME_DIR strategy
 - [x] Persist per_repo_isolated CLI homes across runs for delta sync state preservation
 - [x] Bootstrap isolated CLI homes with source/target server configs on first use
+- [x] Fix `_adjust_threads` to respect isolated CLI home directories (JFROG_CLI_HOME_DIR)
+- [x] `update-threads` CLI command for dynamic thread changes (even mid-run)
 - [x] Catch-up missed runs functionality
 - [x] Schedule simulation/testing feature (simulate-missed command)
 - [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)

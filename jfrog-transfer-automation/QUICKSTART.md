@@ -70,6 +70,42 @@ transfer:
 
 See `README.md` for detailed documentation on transfer modes and `jfrog_cli_home_strategy`.
 
+### Changing Transfer Threads Dynamically
+
+The `transfer.threads` setting controls how many worker threads JFrog CLI uses for
+`transfer-files`. The automation applies this setting via `jf rt transfer-settings`
+before each transfer starts.
+
+**Between runs** — edit `config.yaml` and change the `transfer.threads` value. The new
+thread count takes effect on the next `run-once` or scheduled run.
+
+**During a running transfer** — use the built-in `update-threads` command. It re-reads
+the config and applies the thread setting to the default CLI home and/or every
+per-repo isolated CLI home directory automatically:
+
+```bash
+# Update threads to the value in config.yaml (edit config.yaml first)
+jfrog-transfer-automation update-threads --config config.yaml
+
+# Or override with a specific value without editing config.yaml
+jfrog-transfer-automation update-threads --config config.yaml --threads 16
+```
+
+When using `per_repo_isolated`, the command discovers all CLI home directories under
+`<output_dir>/cli_homes/*/` and updates each one. Example output:
+
+```
+Updating transfer threads to 16 (strategy: per_repo_isolated)
+  ✓ libs-release-local: threads set to 16
+  ✓ libs-snapshot-local: threads set to 16
+  ✓ plugins-release-local: threads set to 16
+
+Successfully updated threads to 16 across 3 CLI home(s).
+```
+
+> **Note:** Thread changes take effect on the next transfer chunk, not immediately
+> on in-flight chunks.
+
 ### Building the Repository List
 
 The `transfer.include_repos_file` setting points to a text file with one repository key per line. Use the JFrog CLI to generate this list from your source Artifactory.
@@ -157,6 +193,15 @@ jfrog-transfer-automation resume --config config.yaml
 ### Monitor transfer progress
 ```bash
 jfrog-transfer-automation monitor --config config.yaml --interval 10
+```
+
+### Update transfer threads (even while running)
+```bash
+# Use thread count from config.yaml
+jfrog-transfer-automation update-threads --config config.yaml
+
+# Override with a specific value
+jfrog-transfer-automation update-threads --config config.yaml --threads 16
 ```
 
 ### Generate report only
