@@ -38,19 +38,28 @@ jfrog:
   target_server_id: "target-server"      # jf config server ID for target
 
 transfer:
-  include_repos_file: "all_local_repos_in_prod.txt"        # File with repo keys (one per line)
+  include_repos_file: "all_local_repos_in_prod.txt"  # File with repo keys (one per line)
   mode: "per_repo"                       # Per-repo transfers with isolation
   threads: 8                             # Transfer worker threads
   batch_size: 4                          # Repos processed in parallel
   stuck_timeout_seconds: 600             # Restart if stuck for 10 minutes
   jfrog_cli_home_strategy: "per_repo_isolated"  # Isolated CLI home per repo
   cli_log_level: "INFO"
+
 report:
   enabled: true
   output_dir: "./runs"
   detailed_comparison: true
-  repos_file_for_comparison: "all_local_repos_in_prod.txt"                  # JFrog CLI log level
+  repos_file_for_comparison: "all_local_repos_in_prod.txt"
 ```
+
+> **Path resolution:** All relative paths in the config are resolved relative
+> to the **directory containing the YAML file**, not your shell's current
+> working directory.  For example, if the config lives at
+> `/opt/transfer/config.yaml` and you set `output_dir: "./runs"`, reports are
+> written to `/opt/transfer/runs/` regardless of where you run the command.
+> This applies to `transfer.include_repos_file`, `report.output_dir`, and
+> `report.repos_file_for_comparison`.  Use absolute paths to bypass this.
 
 All other settings have sensible defaults. See `config.sample.yaml` for the full list with comments.
 

@@ -5,12 +5,18 @@
 #   jfrog-transfer-automation validate --config config.yaml
 #
 # Path resolution (important):
-# - Paths under report.output_dir and report.repos_file_for_comparison that are
-#   not absolute are resolved relative to the directory containing this YAML file.
-# - transfer.include_repos_file: if the value starts with "./" or has no "/"
-#   (e.g. "repos.txt"), it is resolved relative to this file's directory. If it
-#   contains a path with "/" (e.g. "data/repos.txt"), it is interpreted relative
-#   to the process current working directory when the tool runs.
+# All relative paths are resolved relative to the directory containing this
+# YAML file — NOT relative to where you run the command.  For example, if this
+# file lives at /opt/transfer/config.yaml and you set output_dir: "./runs",
+# reports will be written to /opt/transfer/runs/ regardless of your shell's
+# current working directory.
+#
+# This applies to:
+#   - transfer.include_repos_file  (e.g. "repos.txt" → <config-dir>/repos.txt)
+#   - report.output_dir            (e.g. "./runs"    → <config-dir>/runs/)
+#   - report.repos_file_for_comparison
+#
+# Use absolute paths (e.g. /data/repos.txt) to bypass this behaviour.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
