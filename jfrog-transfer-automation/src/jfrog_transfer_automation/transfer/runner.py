@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from jfrog_transfer_automation.config.model import AppConfig
 from jfrog_transfer_automation.jfrog.cli import JFrogCLI
@@ -33,9 +33,51 @@ class TransferRunner:
     def __init__(self, config: AppConfig, jf_cli: JFrogCLI) -> None:
         self.config = config
         self.jf_cli = jf_cli
+        self._threads_adjusted: set[str] = set()
 
     def _include_repos_arg(self, repos: List[str]) -> str:
         return ";".join(repos)
+
+    def _make_env(self, cli_home_dir: Optional[Path] = None, **extras) -> dict | None:
+        """Build an env dict with optional JFROG_CLI_HOME_DIR and extra vars.
+
+        Returns None when no overrides are needed so callers can pass the
+        result directly to subprocess/JFrogCLI (None means inherit parent env).
+        """
+        if not cli_home_dir and not extras:
+            return None
+        env = os.environ.copy()
+        if cli_home_dir:
+            env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+        env.update(extras)
+        return env
+
+    def _is_per_repo_isolated(self) -> bool:
+        return self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated"
+
+    def _for_all_cli_homes(self, action: Callable[[Optional[Path]], str]) -> dict:
+        """Execute *action* across all relevant CLI homes and collect results.
+
+        For 'per_repo_isolated' strategy, iterates each
+        ``<output_dir>/cli_homes/<repo>/``.
+        For 'default' strategy, calls *action* once with ``cli_home_dir=None``.
+        """
+        results: dict = {}
+        if self._is_per_repo_isolated():
+            cli_homes = self._get_all_cli_homes()
+            if not cli_homes:
+                logger.warning("No cli_homes directories found")
+            for repo_dir in cli_homes:
+                try:
+                    results[repo_dir.name] = action(repo_dir)
+                except Exception as e:
+                    results[repo_dir.name] = f"error: {e}"
+        else:
+            try:
+                results["default"] = action(None)
+            except Exception as e:
+                results["default"] = f"error: {e}"
+        return results
 
     def _adjust_threads(
         self,
@@ -59,9 +101,7 @@ class TransferRunner:
             return
         
         try:
-            env = os.environ.copy()
-            if cli_home_dir:
-                env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+            env = self._make_env(cli_home_dir)
 
             if sys.platform == "win32":
                 cmd = f'echo {thread_count} | {self.jf_cli.jfrog_cli_path} rt transfer-settings'
@@ -113,13 +153,25 @@ class TransferRunner:
         so that JFrog CLI transfer state is preserved for delta sync, while still giving
         each repo its own JFROG_CLI_HOME_DIR for concurrency safety.
         """
-        if self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated":
+        if self._is_per_repo_isolated():
             run_base = Path(self.config.report.output_dir).expanduser().resolve()
             repo_home = run_base / "cli_homes" / repo
             repo_home.mkdir(parents=True, exist_ok=True)
             self._bootstrap_cli_home(repo_home)
             return repo_home
         return None
+
+    def _is_server_configured(self, server_id: str, env: dict | None = None) -> bool:
+        """Check whether a server ID has a complete config (URL + credentials).
+
+        ``jf c show`` can return exit code 0 even for a corrupt/empty entry,
+        so we also verify that the output contains a URL line.
+        """
+        check = self.jf_cli.run(["c", "show", server_id], env=env)
+        if check.returncode != 0:
+            return False
+        output_lower = (check.stdout or "").lower()
+        return "url" in output_lower
 
     def _bootstrap_cli_home(self, cli_home_dir: Path) -> None:
         """Import source and target server configs into an isolated CLI home if not already present.
@@ -128,14 +180,18 @@ class TransferRunner:
         them into the isolated directory so that jf rt transfer-files can find the
         configured server IDs.
         """
-        env = os.environ.copy()
-        env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+        env = self._make_env(cli_home_dir)
 
-        # Check if source server is already configured in this home
-        check = self.jf_cli.run(
-            ["c", "show", self.config.jfrog.source_server_id], env=env
-        )
-        if check.returncode == 0:
+        needs_bootstrap = False
+        for server_id in [
+            self.config.jfrog.source_server_id,
+            self.config.jfrog.target_server_id,
+        ]:
+            if not self._is_server_configured(server_id, env=env):
+                needs_bootstrap = True
+                break
+
+        if not needs_bootstrap:
             logger.debug(f"CLI home {cli_home_dir} already bootstrapped, skipping")
             return
 
@@ -163,6 +219,17 @@ class TransferRunner:
                 )
             logger.info(f"Imported server config '{server_id}' into {cli_home_dir}")
 
+        # Verify both servers are now properly configured
+        for server_id in [
+            self.config.jfrog.source_server_id,
+            self.config.jfrog.target_server_id,
+        ]:
+            if not self._is_server_configured(server_id, env=env):
+                raise RuntimeError(
+                    f"Server '{server_id}' was imported into {cli_home_dir} but appears "
+                    f"incomplete (no URL found). Delete {cli_home_dir} and retry."
+                )
+
     def _get_all_cli_homes(self) -> List[Path]:
         """Return all per-repo isolated CLI home directories that exist on disk."""
         cli_homes_base = Path(self.config.report.output_dir).expanduser().resolve() / "cli_homes"
@@ -170,35 +237,18 @@ class TransferRunner:
             return []
         return sorted(d for d in cli_homes_base.iterdir() if d.is_dir())
 
-    def _is_per_repo_isolated(self) -> bool:
-        return self.config.transfer.jfrog_cli_home_strategy == "per_repo_isolated"
-
     def update_threads(self, thread_count: int) -> dict:
         """Apply thread count to all relevant CLI homes (default and/or per-repo isolated).
 
-        Discovers isolated CLI homes and applies the setting to each one.
-        Returns a summary dict with per-home results.
+        Clears the per-home tracking set so subsequent batch launches do not
+        overwrite this override with the config value.
         """
-        results: dict = {}
-
-        if self._is_per_repo_isolated():
-            cli_homes = self._get_all_cli_homes()
-            if not cli_homes:
-                logger.warning("No cli_homes directories found")
-            for repo_dir in cli_homes:
-                try:
-                    self._adjust_threads(thread_count, cli_home_dir=repo_dir)
-                    results[repo_dir.name] = "ok"
-                except Exception as e:
-                    results[repo_dir.name] = f"error: {e}"
-        else:
-            try:
-                self._adjust_threads(thread_count)
-                results["default"] = "ok"
-            except Exception as e:
-                results["default"] = f"error: {e}"
-
-        return results
+        def _update(cli_home_dir: Optional[Path]) -> str:
+            self._adjust_threads(thread_count, cli_home_dir=cli_home_dir)
+            home_key = str(cli_home_dir) if cli_home_dir else "_default_"
+            self._threads_adjusted.add(home_key)
+            return "ok"
+        return self._for_all_cli_homes(_update)
 
     def _check_stuck(self, log_file: Path) -> bool:
         """Check if transfer is stuck by examining log file modification time."""
@@ -209,77 +259,106 @@ class TransferRunner:
         elapsed = time.time() - mtime
         return elapsed > self.config.transfer.stuck_timeout_seconds
 
+    def _prepare_transfer(
+        self,
+        repos: List[str],
+        cli_home_dir: Optional[Path] = None,
+        dry_run: bool = False,
+    ) -> tuple[List[str], dict, Optional[str]]:
+        """Shared setup for blocking and background transfers.
+
+        Adjusts threads and builds the command args, environment, and cwd.
+        Returns (args, env, cwd).
+        """
+        logger.debug(f"=== _prepare_transfer ===")
+        logger.debug(f"Repos: {repos}, dry_run: {dry_run}, cli_home_dir: {cli_home_dir}")
+
+        home_key = str(cli_home_dir) if cli_home_dir else "_default_"
+        if home_key not in self._threads_adjusted:
+            self._adjust_threads(
+                self.config.transfer.threads, dry_run=dry_run, cli_home_dir=cli_home_dir,
+            )
+            if not dry_run:
+                self._threads_adjusted.add(home_key)
+        else:
+            logger.debug(f"Threads already set for {home_key}, skipping (preserves mid-run override)")
+
+        args = self._build_transfer_args(repos)
+        env = self._make_env(
+            cli_home_dir, JFROG_CLI_LOG_LEVEL=self.config.transfer.cli_log_level,
+        )
+        cwd = str(cli_home_dir) if cli_home_dir else None
+
+        logger.debug(f"Transfer args: {args}")
+        logger.debug(
+            f"Environment: JFROG_CLI_LOG_LEVEL={env.get('JFROG_CLI_LOG_LEVEL')}, "
+            f"JFROG_CLI_HOME_DIR={env.get('JFROG_CLI_HOME_DIR', 'N/A')}"
+        )
+        logger.debug(f"Working directory: {cwd}")
+        return args, env, cwd
+
     def start_transfer(
-        self, 
-        repos: List[str], 
+        self,
+        repos: List[str],
         dry_run: bool = False,
         cli_home_dir: Optional[Path] = None,
     ) -> None:
-        """Start a transfer. If dry_run is True, only print what would be executed."""
-        logger.debug(f"=== start_transfer: Starting ===")
-        logger.debug(f"Repos: {repos}, dry_run: {dry_run}, cli_home_dir: {cli_home_dir}")
-        
-        # Set thread count before starting transfer (threads are not a command option)
-        logger.debug(f"Adjusting threads to {self.config.transfer.threads} (cli_home_dir={cli_home_dir})...")
-        self._adjust_threads(self.config.transfer.threads, dry_run=dry_run, cli_home_dir=cli_home_dir)
-        logger.debug("Thread adjustment completed")
-        
-        logger.debug("Building transfer arguments...")
-        logger.debug(f"Config ignore_state value: {self.config.transfer.ignore_state} (type: {type(self.config.transfer.ignore_state)})")
-        args = self._build_transfer_args(repos)
-        logger.debug(f"Transfer args: {args}")
-        # Verify ignore-state argument
-        ignore_state_arg = next((arg for arg in args if arg.startswith("--ignore-state=")), None)
-        if ignore_state_arg:
-            logger.debug(f"ignore-state argument: {ignore_state_arg}")
-        
+        """Start a transfer synchronously (blocks until complete).
+
+        Used by single_command mode where we wait for the CLI to finish.
+        """
+        args, env, cwd = self._prepare_transfer(repos, cli_home_dir, dry_run=dry_run)
+
         if dry_run:
-            env = os.environ.copy()
-            env["JFROG_CLI_LOG_LEVEL"] = self.config.transfer.cli_log_level
-            if cli_home_dir:
-                env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
             print("Would execute:")
             print(f"  Command: {' '.join([self.jf_cli.jfrog_cli_path] + args)}")
             print(f"  Environment: JFROG_CLI_LOG_LEVEL={self.config.transfer.cli_log_level}")
             if cli_home_dir:
                 print(f"  Environment: JFROG_CLI_HOME_DIR={cli_home_dir}")
             print(f"  Repositories: {', '.join(repos)}")
-            logger.debug("=== start_transfer: Dry run completed ===")
             return
-        
-        env = os.environ.copy()
-        env["JFROG_CLI_LOG_LEVEL"] = self.config.transfer.cli_log_level
-        if cli_home_dir:
-            env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
-        
-        logger.debug(f"Executing JFrog CLI command: {self.jf_cli.jfrog_cli_path} {' '.join(args)}")
-        logger.debug(f"Environment: JFROG_CLI_LOG_LEVEL={env.get('JFROG_CLI_LOG_LEVEL')}, JFROG_CLI_HOME_DIR={env.get('JFROG_CLI_HOME_DIR')}")
-        logger.debug(f"Working directory: {cli_home_dir}")
-        
-        result = self.jf_cli.run(args, env=env, cwd=str(cli_home_dir) if cli_home_dir else None)
-        logger.debug(f"JFrog CLI command completed. Return code: {result.returncode}")
-        logger.debug(f"stdout length: {len(result.stdout)} chars, stderr length: {len(result.stderr)} chars")
-        
-        if result.returncode != 0:
-            logger.error(f"Transfer failed with return code {result.returncode}")
-            logger.error(f"stderr: {result.stderr}")
-            raise RuntimeError(f"transfer-files failed: {result.stderr}")
-        
-        logger.debug("=== start_transfer: Completed successfully ===")
 
-    def start_transfer_per_repo(
+        result = self.jf_cli.run(args, env=env, cwd=cwd)
+        logger.debug(f"Transfer completed. Return code: {result.returncode}")
+        if result.returncode != 0:
+            logger.error(f"Transfer failed: {result.stderr}")
+            raise RuntimeError(f"transfer-files failed: {result.stderr}")
+
+    def start_transfer_background(
         self,
-        repo: str,
-        run_dir: Path,
-        dry_run: bool = False,
-    ) -> Path:
-        """Start a transfer for a single repo. Returns log file path."""
+        repos: List[str],
+        cli_home_dir: Optional[Path] = None,
+        log_fh=None,
+    ) -> subprocess.Popen:
+        """Start a transfer as a background process (non-blocking).
+
+        Used by per_repo mode to run multiple repos in parallel within a batch.
+        Returns the Popen handle for monitoring.
+        """
+        args, env, cwd = self._prepare_transfer(repos, cli_home_dir)
+        proc = self.jf_cli.run_background(
+            args, env=env, cwd=cwd,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT if log_fh else None,
+        )
+        logger.info(f"Background transfer launched: PID={proc.pid}, repos={repos}")
+        return proc
+
+    def start_transfer_per_repo(self, repo: str, run_dir: Path):
+        """Start a background transfer for a single repo.
+
+        Returns (log_file_path, Popen_handle, log_file_handle).
+        The caller must close log_file_handle after the process exits.
+        """
         cli_home_dir = self._get_cli_home_dir(repo, run_dir)
         log_file = run_dir / "logs" / f"{repo}.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        self.start_transfer([repo], dry_run=dry_run, cli_home_dir=cli_home_dir)
-        return log_file
+
+        fh = open(log_file, "a")
+        proc = self.start_transfer_background(
+            [repo], cli_home_dir=cli_home_dir, log_fh=fh,
+        )
+        return log_file, proc, fh
 
     def status(self, cli_home_dir: Optional[Path] = None) -> str:
         """Check transfer status for a single CLI home.
@@ -295,10 +374,7 @@ class TransferRunner:
             self.config.jfrog.source_server_id,
             self.config.jfrog.target_server_id,
         ]
-        env: dict | None = None
-        if cli_home_dir:
-            env = os.environ.copy()
-            env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+        env = self._make_env(cli_home_dir)
 
         logger.debug(f"Status command: {' '.join([self.jf_cli.jfrog_cli_path] + args)}")
         result = self.jf_cli.run(args, env=env)
@@ -311,23 +387,9 @@ class TransferRunner:
         return status_text
 
     def status_all(self) -> dict:
-        """Check transfer status across all relevant CLI homes.
+        """Check transfer status across all relevant CLI homes."""
+        return self._for_all_cli_homes(lambda d: self.status(cli_home_dir=d))
 
-        Returns a dict mapping CLI home name to status string.
-        For 'default' strategy returns {'default': <status>}.
-        For 'per_repo_isolated' returns {<repo>: <status>, ...}.
-        """
-        results: dict = {}
-        if self._is_per_repo_isolated():
-            cli_homes = self._get_all_cli_homes()
-            if not cli_homes:
-                logger.warning("No cli_homes directories found")
-            for repo_dir in cli_homes:
-                results[repo_dir.name] = self.status(cli_home_dir=repo_dir)
-        else:
-            results["default"] = self.status()
-        return results
-    
     def _is_transfer_complete(self, status: str) -> bool:
         """Check if transfer is complete based on status output.
         
@@ -342,7 +404,6 @@ class TransferRunner:
         
         status_lower = status.lower()
         
-        # Check for explicit completion indicators
         # Note: JFrog CLI returns "🔴 Status: Not running" when no transfer is active
         completion_indicators = [
             "status: not running",
@@ -359,7 +420,6 @@ class TransferRunner:
                 logger.debug(f"Found completion indicator: '{indicator}'")
                 return True
         
-        # Check for active transfer indicators
         active_indicators = [
             "transfer in progress",
             "running transfer",
@@ -374,51 +434,43 @@ class TransferRunner:
                 logger.debug(f"Found active transfer indicator: '{indicator}'")
                 return False
         
-        # If we can't determine status clearly, check if status is very short or empty-like
-        # This might indicate the transfer is complete but status format is unexpected
         if len(status.strip()) < 50:
             logger.debug(f"Status is very short ({len(status)} chars) and no active indicators found, assuming complete")
             return True
         
-        # If we can't determine, log warning but be more lenient - assume complete if no clear active indicators
         logger.warning(f"Could not definitively determine transfer status from: {status[:200]}")
         logger.warning("No active transfer indicators found, assuming transfer may be complete")
         return True  # Changed to True - if no active indicators, assume complete
 
     def stop(self, cli_home_dir: Optional[Path] = None) -> str:
         """Stop a running transfer in a single CLI home."""
-        env: dict | None = None
-        if cli_home_dir:
-            env = os.environ.copy()
-            env["JFROG_CLI_HOME_DIR"] = str(cli_home_dir)
+        env = self._make_env(cli_home_dir)
         result = self.jf_cli.run(["rt", "transfer-files", "--stop"], env=env)
         if result.returncode != 0:
             raise RuntimeError(result.stderr or "Failed to stop transfer-files")
         return result.stdout
 
     def stop_all(self) -> dict:
-        """Stop running transfers across all relevant CLI homes.
+        """Stop running transfers across all relevant CLI homes."""
+        return self._for_all_cli_homes(lambda d: self.stop(cli_home_dir=d) or "stopped")
 
-        Returns a dict mapping CLI home name to result string.
-        """
-        results: dict = {}
-        if self._is_per_repo_isolated():
-            cli_homes = self._get_all_cli_homes()
-            if not cli_homes:
-                logger.warning("No cli_homes directories found")
-            for repo_dir in cli_homes:
-                try:
-                    output = self.stop(cli_home_dir=repo_dir)
-                    results[repo_dir.name] = output or "stopped"
-                except Exception as e:
-                    results[repo_dir.name] = f"error: {e}"
-        else:
+    @staticmethod
+    def _cleanup_repo_process(
+        repo: str,
+        processes: dict,
+        log_handles: dict,
+    ) -> None:
+        """Kill a running process and close its log handle for a repo."""
+        proc = processes.pop(repo, None)
+        if proc and proc.poll() is None:
+            proc.kill()
             try:
-                output = self.stop()
-                results["default"] = output or "stopped"
-            except Exception as e:
-                results["default"] = f"error: {e}"
-        return results
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        fh = log_handles.pop(repo, None)
+        if fh and not fh.closed:
+            fh.close()
 
     def _run_per_repo_mode(
         self,
@@ -426,11 +478,21 @@ class TransferRunner:
         run_dir: Path,
         end_time: Optional[float],
         dry_run: bool,
+        stop_requested: Optional[Callable[[], bool]] = None,
     ) -> TransferResult:
-        """Run transfers in per-repo mode with batching."""
+        """Run transfers in per-repo mode with batching and parallel execution.
+
+        Each repo in a batch is launched as a non-blocking background process.
+        The monitoring loop uses process.poll() to track completion, avoiding
+        the ambiguity of parsing ``jf rt transfer-files --status`` output.
+
+        If *stop_requested* is provided it is called periodically; when it
+        returns True the method kills active processes and skips remaining
+        batches, returning status ``"stopped"``.
+        """
         logger.debug("=== _run_per_repo_mode: Starting ===")
         logger.debug(f"Repos: {len(repos)}, run_dir: {run_dir}, end_time: {end_time}, dry_run: {dry_run}")
-        
+
         if dry_run:
             logger.info(f"Would run {len(repos)} repos in per-repo mode with batch_size={self.config.transfer.batch_size}")
             return TransferResult(
@@ -441,120 +503,144 @@ class TransferRunner:
                 run_dir=run_dir,
                 message="Dry run - per-repo mode",
             )
-        
+
         started_at = time.time()
-        log_files = {}
-        completed_repos = []
-        failed_repos = []
+        completed_repos: List[str] = []
+        failed_repos: List[str] = []
+        processes: dict = {}
+        log_files: dict = {}
+        log_handles: dict = {}
         restart_counts = {repo: 0 for repo in repos}
         max_restarts = 3
-        
-        # Split repos into batches
+
         batch_size = self.config.transfer.batch_size
         batches = [repos[i:i + batch_size] for i in range(0, len(repos), batch_size)]
-        
+
         logger.info(f"Running {len(repos)} repos in {len(batches)} batches (batch_size={batch_size})")
         logger.debug(f"Batch breakdown: {[len(b) for b in batches]}")
-        
+
+        stopped = False
+
         for batch_idx, batch in enumerate(batches, 1):
+            if stop_requested and stop_requested():
+                logger.info("Stop requested, skipping remaining batches")
+                stopped = True
+                break
+
             logger.info(f"Processing batch {batch_idx}/{len(batches)}: {batch}")
-            logger.debug(f"=== Starting batch {batch_idx}/{len(batches)} ===")
-            
-            # Start transfers for this batch
-            logger.debug(f"Starting transfers for {len(batch)} repos in batch {batch_idx}...")
+
+            # Launch all repos in this batch in parallel (non-blocking)
             for repo in batch:
                 try:
-                    logger.debug(f"Starting transfer for repo: {repo}")
-                    log_file = self.start_transfer_per_repo(repo, run_dir, dry_run=False)
+                    log_file, proc, fh = self.start_transfer_per_repo(repo, run_dir)
                     log_files[repo] = log_file
-                    logger.debug(f"Transfer started for {repo}, log file: {log_file}")
+                    processes[repo] = proc
+                    log_handles[repo] = fh
+                    logger.info(f"Launched transfer for {repo} (PID={proc.pid})")
                 except Exception as e:
                     logger.error(f"Failed to start transfer for {repo}: {e}")
                     failed_repos.append(repo)
-            
-            # Monitor batch
+
+            # Monitor batch — all transfers are running in parallel
+            active_repos = [r for r in batch if r not in failed_repos]
             monitor_iteration = 0
-            while batch:
+
+            while active_repos:
                 monitor_iteration += 1
-                current_time = time.time()
-                logger.debug(f"Batch {batch_idx} monitoring iteration {monitor_iteration} (elapsed: {current_time - started_at:.1f}s)")
-                
-                if end_time and current_time >= end_time:
-                    logger.info("End time reached, stopping transfers")
-                    try:
-                        self.stop_all()
-                    except Exception:
-                        pass
+                logger.debug(
+                    f"Batch {batch_idx} monitor iteration {monitor_iteration}: "
+                    f"{len(active_repos)} active ({active_repos})"
+                )
+
+                if stop_requested and stop_requested():
+                    logger.info("Stop requested, killing active transfers in batch")
+                    for repo in active_repos:
+                        self._cleanup_repo_process(repo, processes, log_handles)
+                    stopped = True
                     break
-                
-                remaining = []
-                for repo in batch:
-                    if repo in failed_repos:
-                        logger.debug(f"Skipping {repo} (already failed)")
+
+                if end_time and time.time() >= end_time:
+                    logger.info("End time reached, killing remaining transfers")
+                    for repo in active_repos:
+                        self._cleanup_repo_process(repo, processes, log_handles)
+                    break
+
+                still_running: List[str] = []
+                for repo in active_repos:
+                    proc = processes.get(repo)
+                    if proc is None:
                         continue
-                    
+
+                    rc = proc.poll()
+                    if rc is not None:
+                        # Process exited
+                        fh = log_handles.pop(repo, None)
+                        if fh and not fh.closed:
+                            fh.close()
+                        if rc == 0:
+                            completed_repos.append(repo)
+                            logger.info(f"Transfer completed for {repo} (exit code 0)")
+                        else:
+                            logger.error(f"Transfer failed for {repo} (exit code {rc})")
+                            failed_repos.append(repo)
+                        continue
+
+                    # Process still running — check if stuck
                     log_file = log_files.get(repo)
-                    if not log_file or not log_file.exists():
-                        logger.debug(f"{repo}: Log file not found, keeping in batch")
-                        remaining.append(repo)
-                        continue
-                    
-                    # Check if stuck
-                    if self._check_stuck(log_file):
-                        logger.debug(f"{repo}: Appears stuck (log file mtime: {log_file.stat().st_mtime})")
+                    if log_file and self._check_stuck(log_file):
                         if restart_counts[repo] < max_restarts:
-                            logger.warning(f"Transfer for {repo} appears stuck, restarting (attempt {restart_counts[repo] + 1})")
                             restart_counts[repo] += 1
+                            logger.warning(
+                                f"Transfer for {repo} appears stuck, "
+                                f"restarting (attempt {restart_counts[repo]}/{max_restarts})"
+                            )
+                            self._cleanup_repo_process(repo, processes, log_handles)
                             try:
-                                log_file = self.start_transfer_per_repo(repo, run_dir, dry_run=False)
+                                log_file, proc, fh = self.start_transfer_per_repo(repo, run_dir)
                                 log_files[repo] = log_file
-                                remaining.append(repo)
+                                processes[repo] = proc
+                                log_handles[repo] = fh
+                                still_running.append(repo)
                             except Exception as e:
                                 logger.error(f"Restart failed for {repo}: {e}")
                                 failed_repos.append(repo)
                         else:
-                            logger.error(f"Transfer for {repo} stuck and max restarts reached")
+                            logger.error(f"Transfer for {repo} stuck, max restarts reached")
+                            self._cleanup_repo_process(repo, processes, log_handles)
                             failed_repos.append(repo)
                         continue
-                    
-                    # Check if completed — query the repo's own CLI home for status
-                    logger.debug(f"Checking status for {repo}...")
-                    cli_home = self._get_cli_home_dir(repo, run_dir)
-                    status = self.status(cli_home_dir=cli_home)
-                    if self._is_transfer_complete(status):
-                        # Transfer finished, check if this repo's transfer completed
-                        if repo not in completed_repos:
-                            completed_repos.append(repo)
-                            logger.info(f"Transfer completed for {repo}")
-                            logger.debug(f"{repo} marked as completed")
-                    else:
-                        logger.debug(f"{repo} still running")
-                        remaining.append(repo)
-                
-                batch = remaining
-                if batch:
-                    logger.debug(f"Batch {batch_idx}: {len(batch)} repos still running, sleeping for {self.config.transfer.poll_interval_seconds}s...")
+
+                    still_running.append(repo)
+
+                active_repos = still_running
+                if active_repos:
+                    logger.debug(
+                        f"Batch {batch_idx}: {len(active_repos)} repos still running, "
+                        f"sleeping {self.config.transfer.poll_interval_seconds}s"
+                    )
                     time.sleep(self.config.transfer.poll_interval_seconds)
-                else:
-                    logger.debug(f"Batch {batch_idx}: All repos completed or failed")
-            
-            # Wait for batch to complete before starting next
-            if batch_idx < len(batches):
-                logger.info("Waiting for batch to complete before starting next batch...")
-                wait_iteration = 0
-                while any(r not in completed_repos and r not in failed_repos for r in batch):
-                    wait_iteration += 1
-                    logger.debug(f"Waiting for batch {batch_idx} completion (iteration {wait_iteration})...")
-                    time.sleep(self.config.transfer.poll_interval_seconds)
-                logger.debug(f"Batch {batch_idx} fully completed")
-        
+
+            logger.info(f"Batch {batch_idx}/{len(batches)} finished")
+
+            if stopped:
+                break
+
+        # Final cleanup of any remaining handles
+        for repo in list(log_handles.keys()):
+            self._cleanup_repo_process(repo, processes, log_handles)
+
         ended_at = time.time()
-        status_label = "completed" if not failed_repos else "partial"
+        if stopped:
+            status_label = "stopped"
+        elif not failed_repos:
+            status_label = "completed"
+        else:
+            status_label = "partial"
         message = f"Completed: {len(completed_repos)}, Failed: {len(failed_repos)}"
-        
+
         logger.debug(f"=== _run_per_repo_mode: Completed ===")
         logger.debug(f"Total time: {ended_at - started_at:.1f}s, Status: {status_label}, {message}")
-        
+
         return TransferResult(
             status=status_label,
             started_at=started_at,
@@ -565,10 +651,11 @@ class TransferRunner:
         )
 
     def run_and_monitor(
-        self, 
-        run_dir: Path, 
+        self,
+        run_dir: Path,
         end_time: Optional[float] = None,
         dry_run: bool = False,
+        stop_requested: Optional[Callable[[], bool]] = None,
     ) -> TransferResult:
         logger.debug("=== run_and_monitor: Starting ===")
         logger.debug(f"Run directory: {run_dir}, end_time: {end_time}, dry_run: {dry_run}")
@@ -583,7 +670,7 @@ class TransferRunner:
         # Choose mode
         if self.config.transfer.mode == "per_repo":
             logger.debug(f"Using per_repo mode")
-            return self._run_per_repo_mode(repos, run_dir, end_time, dry_run)
+            return self._run_per_repo_mode(repos, run_dir, end_time, dry_run, stop_requested)
         
         # Single command mode (existing implementation)
         logger.debug(f"Using single_command mode")

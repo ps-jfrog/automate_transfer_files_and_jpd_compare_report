@@ -215,28 +215,13 @@ def compare_repositories(
         target_space_bytes = get_space_bytes(target_repo, source_has_bytes)
 
         if enable_aql:
-            if source_package_type == "Docker":
-                source_uploads_count, source_uploads_size = get_docker_uploads_exclusion(
-                    jf_cli, repo_key, source_server_id
-                )
-                target_uploads_count, target_uploads_size = get_docker_uploads_exclusion(
-                    jf_cli, repo_key, target_server_id
-                )
-                source_files_count -= source_uploads_count
-                target_files_count -= target_uploads_count
-                source_space_bytes -= source_uploads_size
-                target_space_bytes -= target_uploads_size
-            else:
-                source_dot_count, source_dot_size = get_dot_folders_exclusion(
-                    jf_cli, repo_key, source_server_id
-                )
-                target_dot_count, target_dot_size = get_dot_folders_exclusion(
-                    jf_cli, repo_key, target_server_id
-                )
-                source_files_count -= source_dot_count
-                target_files_count -= target_dot_count
-                source_space_bytes -= source_dot_size
-                target_space_bytes -= target_dot_size
+            exclusion_fn = get_docker_uploads_exclusion if source_package_type == "Docker" else get_dot_folders_exclusion
+            src_excl_count, src_excl_size = exclusion_fn(jf_cli, repo_key, source_server_id)
+            tgt_excl_count, tgt_excl_size = exclusion_fn(jf_cli, repo_key, target_server_id)
+            source_files_count -= src_excl_count
+            target_files_count -= tgt_excl_count
+            source_space_bytes -= src_excl_size
+            target_space_bytes -= tgt_excl_size
 
         space_difference = source_space_bytes - target_space_bytes
         transfer_percentage = (

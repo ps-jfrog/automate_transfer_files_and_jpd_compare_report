@@ -7,8 +7,8 @@ schedule:
 
 jfrog:
   jfrog_cli_path: "jf"
-  source_server_id: "app2"
-  target_server_id: "app1"
+  source_server_id: "app1"
+  target_server_id: "app2"
   source_url: null
   target_url: null
   source_access_token: null
@@ -19,16 +19,16 @@ jfrog:
 transfer:
   include_repos_file: "all_local_repos_in_prod.txt"
   include_repos_inline: null
-  mode: "single_command"  # Options: "single_command" | "per_repo"
+  mode: "per_repo"  # Options: "single_command" | "per_repo"
                          # - single_command: One command for all repos (default, faster for small sets)
                          # - per_repo: Separate command per repo (better for large sets, with batching and stuck detection)
   threads: 9
   filestore: false
   ignore_state: false
-  batch_size: 4  # Only used in per_repo mode: number of repos to process in parallel
+  batch_size: 2  # Only used in per_repo mode: number of repos to process in parallel
   stuck_timeout_seconds: 600  # Only used in per_repo mode: seconds before considering a transfer stuck
   poll_interval_seconds: 60
-  jfrog_cli_home_strategy: "default"  # Options: "default" | "per_repo_isolated"
+  jfrog_cli_home_strategy: "per_repo_isolated"  # Options: "default" | "per_repo_isolated"
                                        # - default: Use shared JFrog CLI home directory
                                        # - per_repo_isolated: Create isolated CLI home per repo (only for per_repo mode)
   cli_log_level: "DEBUG"  # DEBUG, INFO, WARN, ERROR
@@ -40,7 +40,7 @@ report:
   detailed_comparison: true
   repos_file_for_comparison: all_local_repos_in_prod.txt
   enable_aql_queries: true
-  storage_calculation_wait_seconds: 5  # Wait time (seconds) after calculate_storage() API call
+  storage_calculation_wait_seconds: 30  # Wait time (seconds) after calculate_storage() API call
 
 notify:
   method: "none"

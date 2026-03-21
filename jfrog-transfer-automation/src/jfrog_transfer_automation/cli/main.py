@@ -20,7 +20,6 @@ from jfrog_transfer_automation.notify.webhook import post_webhook
 from jfrog_transfer_automation.report.generator import generate_report
 from jfrog_transfer_automation.transfer.locks import RunLock
 from jfrog_transfer_automation.transfer.runner import TransferRunner
-from jfrog_transfer_automation.transfer.repo_list import load_repos
 from jfrog_transfer_automation.util.time import ScheduleWindow, get_missed_windows, next_window, parse_hhmm, sleep_seconds_until
 
 
@@ -40,23 +39,23 @@ def parse_args() -> argparse.Namespace:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     
-    validate_parser = subparsers.add_parser("validate", parents=[parent_parser])
+    subparsers.add_parser("validate", parents=[parent_parser])
     
     run_once_parser = subparsers.add_parser("run-once", parents=[parent_parser])
     run_once_parser.add_argument("--background", action="store_true", help="Run in background")
     run_once_parser.add_argument("--dry-run", action="store_true", help="Dry run mode")
     
-    status_parser = subparsers.add_parser("status", parents=[parent_parser])
+    subparsers.add_parser("status", parents=[parent_parser])
     
-    stop_parser = subparsers.add_parser("stop", parents=[parent_parser])
+    subparsers.add_parser("stop", parents=[parent_parser])
     
     resume_parser = subparsers.add_parser("resume", parents=[parent_parser])
     resume_parser.add_argument("--background", action="store_true", help="Run in background")
     resume_parser.add_argument("--dry-run", action="store_true", help="Dry run mode")
     
-    report_parser = subparsers.add_parser("report", parents=[parent_parser])
+    subparsers.add_parser("report", parents=[parent_parser])
     
-    scheduler_parser = subparsers.add_parser("scheduler", parents=[parent_parser])
+    subparsers.add_parser("scheduler", parents=[parent_parser])
     
     monitor_parser = subparsers.add_parser("monitor", parents=[parent_parser])
     monitor_parser.add_argument("--interval", type=int, default=10, help="Monitor interval in seconds (default: 10)")
@@ -69,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     update_threads_parser.add_argument("--threads", type=int, default=None,
         help="Thread count override (default: use transfer.threads from config)")
 
-    clear_lock_parser = subparsers.add_parser("clear-lock", parents=[parent_parser],
+    subparsers.add_parser("clear-lock", parents=[parent_parser],
         help="Remove stale lock file and reset run state after a crash")
 
     args = parser.parse_args()
@@ -81,6 +80,15 @@ def parse_args() -> argparse.Namespace:
         parser.error("the following arguments are required: --config")
     
     return args
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _run_base(config) -> Path:
+    """Resolve the base output directory from config."""
+    return Path(config.report.output_dir).expanduser().resolve()
 
 
 def _run_dir(base_dir: str) -> Path:
@@ -159,45 +167,36 @@ def _resolve_clients(config) -> tuple[ArtifactoryClient, ArtifactoryClient]:
     logger.debug("=== _resolve_clients: Starting ===")
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
 
-    if not config.jfrog.source_url or not config.jfrog.source_access_token:
-        logger.debug(f"Extracting source server config for: {config.jfrog.source_server_id}")
-        creds = extract_cli_config(jf_cli, config.jfrog.source_server_id)
-        config.jfrog.source_url = config.jfrog.source_url or creds.url
-        config.jfrog.source_access_token = (
-            config.jfrog.source_access_token or creds.access_token
-        )
-        logger.debug(f"Source server URL: {config.jfrog.source_url}")
-    else:
-        logger.debug("Source URL and token already configured")
+    for label, server_id in [
+        ("source", config.jfrog.source_server_id),
+        ("target", config.jfrog.target_server_id),
+    ]:
+        url = getattr(config.jfrog, f"{label}_url")
+        token = getattr(config.jfrog, f"{label}_access_token")
+        if not url or not token:
+            logger.debug(f"Extracting {label} server config for: {server_id}")
+            creds = extract_cli_config(jf_cli, server_id)
+            if not url:
+                setattr(config.jfrog, f"{label}_url", creds.url)
+            if not token:
+                setattr(config.jfrog, f"{label}_access_token", creds.access_token)
+            logger.debug(f"{label.title()} server URL: {getattr(config.jfrog, f'{label}_url')}")
+        else:
+            logger.debug(f"{label.title()} URL and token already configured")
 
-    if not config.jfrog.target_url or not config.jfrog.target_access_token:
-        logger.debug(f"Extracting target server config for: {config.jfrog.target_server_id}")
-        creds = extract_cli_config(jf_cli, config.jfrog.target_server_id)
-        config.jfrog.target_url = config.jfrog.target_url or creds.url
-        config.jfrog.target_access_token = (
-            config.jfrog.target_access_token or creds.access_token
+    def _make_client(label: str) -> ArtifactoryClient:
+        return ArtifactoryClient(
+            base_url=getattr(config.jfrog, f"{label}_url"),
+            access_token=getattr(config.jfrog, f"{label}_access_token"),
+            verify_ssl=config.jfrog.verify_ssl,
+            timeout_seconds=config.jfrog.timeout_seconds,
+            storage_calculation_wait_seconds=config.report.storage_calculation_wait_seconds,
         )
-        logger.debug(f"Target server URL: {config.jfrog.target_url}")
-    else:
-        logger.debug("Target URL and token already configured")
 
     logger.debug("Creating ArtifactoryClient instances...")
-    source_client = ArtifactoryClient(
-        base_url=config.jfrog.source_url,
-        access_token=config.jfrog.source_access_token,
-        verify_ssl=config.jfrog.verify_ssl,
-        timeout_seconds=config.jfrog.timeout_seconds,
-        storage_calculation_wait_seconds=config.report.storage_calculation_wait_seconds,
-    )
-    target_client = ArtifactoryClient(
-        base_url=config.jfrog.target_url,
-        access_token=config.jfrog.target_access_token,
-        verify_ssl=config.jfrog.verify_ssl,
-        timeout_seconds=config.jfrog.timeout_seconds,
-        storage_calculation_wait_seconds=config.report.storage_calculation_wait_seconds,
-    )
+    result = _make_client("source"), _make_client("target")
     logger.debug("=== _resolve_clients: Completed ===")
-    return source_client, target_client
+    return result
 
 
 def _run_in_background(config_path: str, verbose: bool, dry_run: bool, command: str = "run-once") -> int:
@@ -215,7 +214,6 @@ def _run_in_background(config_path: str, verbose: bool, dry_run: bool, command: 
     # On Windows, use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
     # On Unix, use os.fork() or subprocess with proper flags
     if sys.platform == "win32":
-        # Windows background execution
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         process = subprocess.Popen(
             script_args,
@@ -225,10 +223,8 @@ def _run_in_background(config_path: str, verbose: bool, dry_run: bool, command: 
         )
         print(f"Started background process with PID: {process.pid}")
     else:
-        # Unix background execution
         pid = os.fork()
         if pid == 0:
-            # Child process
             os.setsid()
             process = subprocess.Popen(
                 script_args,
@@ -238,170 +234,51 @@ def _run_in_background(config_path: str, verbose: bool, dry_run: bool, command: 
             )
             os._exit(0)
         else:
-            # Parent process
             print(f"Started background process with PID: {pid}")
     
     return 0
 
 
-def cmd_validate(config) -> int:
-    """Validate configuration and JFrog CLI setup."""
-    jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-    
-    # Validate schedule
-    if not config.schedule.start_time:
-        raise RuntimeError("schedule.start_time is required in config")
-    
-    # Validate server IDs
-    if not config.jfrog.source_server_id:
-        raise RuntimeError("jfrog.source_server_id is required in config")
-    if not config.jfrog.target_server_id:
-        raise RuntimeError("jfrog.target_server_id is required in config")
-    
-    # Validate JFrog CLI server configurations
-    print(f"Validating source server: {config.jfrog.source_server_id}")
+def _notify(config, report_path: Path, logger) -> None:
     try:
-        source_creds = extract_cli_config(jf_cli, config.jfrog.source_server_id)
-        print(f"  ✓ Source server configured: {source_creds.url}")
-    except RuntimeError as e:
-        print(f"  ✗ Source server validation failed")
-        raise RuntimeError(f"Source server validation failed: {e}")
-    
-    print(f"Validating target server: {config.jfrog.target_server_id}")
-    try:
-        target_creds = extract_cli_config(jf_cli, config.jfrog.target_server_id)
-        print(f"  ✓ Target server configured: {target_creds.url}")
-    except RuntimeError as e:
-        print(f"  ✗ Target server validation failed")
-        raise RuntimeError(f"Target server validation failed: {e}")
-    
-    print("\n✓ Configuration validation successful!")
-    return 0
-
-
-def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool = False, config_path: str = "") -> int:
-    logger = None
-    if background:
-        return _run_in_background(config_path, verbose, dry_run)
-    
-    logger = setup_logging(_run_dir(config.report.output_dir), verbose)
-    logger.debug("=== cmd_run_once: Starting ===")
-    logger.debug(f"Config path: {config_path}, dry_run: {dry_run}, verbose: {verbose}")
-    
-    run_dir = _run_dir(config.report.output_dir)
-    logger.debug(f"Run directory: {run_dir}")
-
-    run_base = Path(config.report.output_dir).expanduser().resolve()
-    logger.debug(f"Run base directory: {run_base}")
-    
-    lock = RunLock(run_base / ".lock")
-    logger.debug("Attempting to acquire lock...")
-    if not lock.acquire():
-        # Check if there's a current run to provide better error message
-        current = _read_current_run(run_base)
-        if current and current.get('started_at'):
-            started_at = datetime.fromtimestamp(current.get('started_at'), tz=timezone.utc)
-            logger.info(f"Run in progress (started at {started_at.strftime('%Y-%m-%d %H:%M:%S')}). Skipping.")
-        elif current:
-            logger.info("Run in progress (status: {}). Skipping.".format(current.get('status', 'unknown')))
-        else:
-            logger.info("Run in progress (lock held by another process). Skipping.")
-        return 1
-    
-    # Check if there's a stale "running" status in current_run.json
-    # If the lock was acquired but current_run.json shows "running", it might be stale
-    current = _read_current_run(run_base)
-    if current and current.get('status') == 'running':
-        started_at = current.get('started_at')
-        if started_at:
-            # Check if the run is stale (started more than 24 hours ago)
-            started_dt = datetime.fromtimestamp(started_at, tz=timezone.utc)
-            age_hours = (datetime.now(timezone.utc) - started_dt).total_seconds() / 3600
-            if age_hours > 24:
-                logger.warning(f"Found stale 'running' status (started {age_hours:.1f} hours ago). Clearing it.")
-                # Clear the stale status
-                _write_current_run(run_base, {"status": "cleared_stale", "cleared_at": time.time()})
-            else:
-                # Run is recent, might actually be running - check if lock file exists
-                lock_file = run_base / ".lock"
-                if not lock_file.exists():
-                    # Lock file doesn't exist but status says running - this is inconsistent, clear it
-                    logger.warning("Found 'running' status but no lock file. Clearing stale status.")
-                    _write_current_run(run_base, {"status": "cleared_stale", "cleared_at": time.time()})
-                else:
-                    # Lock exists and status is recent - might be a real running process
-                    logger.warning(f"Found 'running' status (started {age_hours:.1f} hours ago) but lock was acquired. This may indicate a stale status.")
-                    # Still proceed since we have the lock
-    logger.debug("Lock acquired successfully")
-
-    try:
-        logger.debug("Writing current run status...")
-        _write_current_run(
-            run_base,
-            {"status": "running", "started_at": time.time(), "run_dir": str(run_dir)},
-        )
-        logger.debug("Initializing TransferRunner...")
-        transfer = TransferRunner(config, JFrogCLI(config.jfrog.jfrog_cli_path))
-        
-        end_time = _end_timestamp(config)
-        logger.debug(f"Starting transfer monitoring (end_time: {end_time})")
-        transfer_result = transfer.run_and_monitor(run_dir, end_time=end_time, dry_run=dry_run)
-        logger.debug(f"Transfer monitoring completed. Status: {transfer_result.status}")
-        
-        if not dry_run:
-            elapsed = transfer_result.ended_at - transfer_result.started_at
-            logger.info("Transfer completed in %.1fs", elapsed)
-            logger.debug(f"Transfer details: status={transfer_result.status}, message={transfer_result.message}")
-
-            if config.report.enabled:
-                logger.debug("Report generation enabled, resolving clients...")
-                source_client, target_client = _resolve_clients(config)
-                logger.debug("Clients resolved, generating report...")
-                report_dir = run_dir / "reports"
-                jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-                result = generate_report(
-                    source_client,
-                    target_client,
-                    report_dir,
-                    config.report.repo_type,
-                    detailed_comparison=config.report.detailed_comparison,
-                    repos_file_for_comparison=config.report.repos_file_for_comparison,
-                    enable_aql_queries=config.report.enable_aql_queries,
-                    source_server_id=config.jfrog.source_server_id,
-                    target_server_id=config.jfrog.target_server_id,
-                    jf_cli=jf_cli,
-                )
-                logger.info("Report generated: %s", result.report_path)
-                logger.debug("Sending notifications...")
-                _notify(config, result.report_path, logger)
-            else:
-                logger.debug("Report generation disabled")
-
-            logger.debug("Writing final run status...")
-            _write_current_run(
-                run_base,
-                {"status": "completed", "ended_at": time.time(), "run_dir": str(run_dir)},
+        if config.notify.method == "email":
+            send_email(
+                config.notify.email,
+                subject="JFrog Transfer Report",
+                body=f"Report available at: {report_path}",
             )
-            _write_last_run_time(run_base, time.time())
-        else:
-            logger.info("Dry run completed - no actual transfer executed")
-        
-        logger.debug("=== cmd_run_once: Completed successfully ===")
-        return 0
-    finally:
-        logger.debug("Releasing lock...")
-        lock.release()
-        logger.debug("Lock released")
+        elif config.notify.method == "webhook":
+            post_webhook(
+                config.notify.webhook.url,
+                payload={"text": "JFrog Transfer Report", "path": str(report_path)},
+                headers=config.notify.webhook.headers,
+            )
+    except Exception as exc:
+        logger.error("Notification failed: %s", exc)
 
 
-def cmd_status(config) -> int:
-    """Check transfer status, querying each per-repo CLI home when applicable."""
+def _generate_report_and_notify(config, run_dir: Path, logger) -> None:
+    """Generate the comparison report and send notifications."""
+    source_client, target_client = _resolve_clients(config)
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-    runner = TransferRunner(config, jf_cli)
+    result = generate_report(
+        source_client,
+        target_client,
+        run_dir / "reports",
+        config.report.repo_type,
+        detailed_comparison=config.report.detailed_comparison,
+        repos_file_for_comparison=config.report.repos_file_for_comparison,
+        enable_aql_queries=config.report.enable_aql_queries,
+        source_server_id=config.jfrog.source_server_id,
+        target_server_id=config.jfrog.target_server_id,
+        jf_cli=jf_cli,
+    )
+    logger.info("Report generated: %s", result.report_path)
+    _notify(config, result.report_path, logger)
 
-    results = runner.status_all()
 
-    print("JFrog Transfer Status:")
+def _print_status_results(results: dict) -> None:
+    """Print per-CLI-home status results with consistent formatting."""
     for name, status_text in results.items():
         if len(results) > 1:
             print(f"\n  [{name}]")
@@ -410,7 +287,155 @@ def cmd_status(config) -> int:
         else:
             print(status_text or "(no output)")
 
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+
+def _clear_stale_running_status(run_base: Path, logger) -> None:
+    """Clear a stale 'running' status when the lock was successfully acquired."""
+    current = _read_current_run(run_base)
+    if not current or current.get('status') != 'running':
+        return
+
+    started_at = current.get('started_at')
+    if not started_at:
+        return
+
+    started_dt = datetime.fromtimestamp(started_at, tz=timezone.utc)
+    age_hours = (datetime.now(timezone.utc) - started_dt).total_seconds() / 3600
+
+    if age_hours > 24:
+        logger.warning(f"Found stale 'running' status (started {age_hours:.1f} hours ago). Clearing it.")
+        _write_current_run(run_base, {"status": "cleared_stale", "cleared_at": time.time()})
+    else:
+        lock_file = run_base / ".lock"
+        if not lock_file.exists():
+            logger.warning("Found 'running' status but no lock file. Clearing stale status.")
+            _write_current_run(run_base, {"status": "cleared_stale", "cleared_at": time.time()})
+        else:
+            logger.warning(f"Found 'running' status (started {age_hours:.1f} hours ago) but lock was acquired. This may indicate a stale status.")
+
+
+def _execute_transfer(
+    config,
+    verbose: bool,
+    dry_run: bool = False,
+    background: bool = False,
+    config_path: str = "",
+    command: str = "run-once",
+) -> int:
+    """Core transfer execution shared by run-once and resume."""
+    if background:
+        return _run_in_background(config_path, verbose, dry_run, command=command)
+
+    run_dir = _run_dir(config.report.output_dir)
+    logger = setup_logging(run_dir, verbose)
+
+    run_base = _run_base(config)
+    lock = RunLock(run_base / ".lock")
+    if not lock.acquire():
+        current = _read_current_run(run_base)
+        if current and current.get('started_at'):
+            started_dt = datetime.fromtimestamp(current['started_at'], tz=timezone.utc)
+            logger.info(f"Run in progress (started at {started_dt.strftime('%Y-%m-%d %H:%M:%S')}). Skipping.")
+        elif current:
+            logger.info("Run in progress (status: {}). Skipping.".format(current.get('status', 'unknown')))
+        else:
+            logger.info("Run in progress (lock held by another process). Skipping.")
+        return 1
+
+    if command == "run-once":
+        _clear_stale_running_status(run_base, logger)
+    logger.debug("Lock acquired successfully")
+
+    try:
+        run_payload: dict = {"status": "running", "run_dir": str(run_dir)}
+        if command == "resume":
+            run_payload["resumed_at"] = time.time()
+        else:
+            run_payload["started_at"] = time.time()
+        _write_current_run(run_base, run_payload)
+
+        transfer = TransferRunner(config, JFrogCLI(config.jfrog.jfrog_cli_path))
+        end_time = _end_timestamp(config)
+
+        def _check_stop() -> bool:
+            current = _read_current_run(run_base)
+            return bool(current and current.get("status") == "stopped")
+
+        transfer_result = transfer.run_and_monitor(
+            run_dir, end_time=end_time, dry_run=dry_run, stop_requested=_check_stop,
+        )
+
+        if not dry_run:
+            logger.info(
+                "Transfer %s in %.1fs",
+                transfer_result.status,
+                transfer_result.ended_at - transfer_result.started_at,
+            )
+
+            if transfer_result.status == "stopped":
+                logger.info("Transfer was stopped by user — skipping report generation")
+            elif config.report.enabled:
+                _generate_report_and_notify(config, run_dir, logger)
+
+            final_status = transfer_result.status if transfer_result.status in ("stopped", "partial") else "completed"
+            _write_current_run(
+                run_base,
+                {"status": final_status, "ended_at": time.time(), "run_dir": str(run_dir)},
+            )
+            if command == "run-once" and final_status != "stopped":
+                _write_last_run_time(run_base, time.time())
+        else:
+            logger.info("Dry run completed - no actual transfer executed")
+
+        return 0
+    finally:
+        lock.release()
+
+
+# ---------------------------------------------------------------------------
+# CLI command handlers
+# ---------------------------------------------------------------------------
+
+def cmd_validate(config) -> int:
+    """Validate configuration and JFrog CLI setup."""
+    jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
+    
+    if not config.schedule.start_time:
+        raise RuntimeError("schedule.start_time is required in config")
+    
+    if not config.jfrog.source_server_id:
+        raise RuntimeError("jfrog.source_server_id is required in config")
+    if not config.jfrog.target_server_id:
+        raise RuntimeError("jfrog.target_server_id is required in config")
+    
+    for label, server_id in [
+        ("source", config.jfrog.source_server_id),
+        ("target", config.jfrog.target_server_id),
+    ]:
+        print(f"Validating {label} server: {server_id}")
+        try:
+            creds = extract_cli_config(jf_cli, server_id)
+            print(f"  ✓ {label.title()} server configured: {creds.url}")
+        except RuntimeError as e:
+            print(f"  ✗ {label.title()} server validation failed")
+            raise RuntimeError(f"{label.title()} server validation failed: {e}")
+    
+    print("\n✓ Configuration validation successful!")
+    return 0
+
+
+def cmd_run_once(config, verbose: bool, dry_run: bool = False, background: bool = False, config_path: str = "") -> int:
+    return _execute_transfer(config, verbose, dry_run, background, config_path, command="run-once")
+
+
+def cmd_status(config) -> int:
+    """Check transfer status, querying each per-repo CLI home when applicable."""
+    jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
+    runner = TransferRunner(config, jf_cli)
+
+    print("JFrog Transfer Status:")
+    _print_status_results(runner.status_all())
+
+    run_base = _run_base(config)
     current = _read_current_run(run_base)
     if current:
         print("\nCurrent Run Info:")
@@ -435,7 +460,7 @@ def cmd_stop(config) -> int:
         else:
             print(output)
 
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+    run_base = _run_base(config)
     current = _read_current_run(run_base)
     if current:
         current["status"] = "stopped"
@@ -453,7 +478,7 @@ def cmd_clear_lock(config) -> int:
     held by another process and it is safe to clean up.  If the lock cannot
     be acquired, another run is genuinely active and the user is warned.
     """
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+    run_base = _run_base(config)
     lock_path = run_base / ".lock"
     current_run_path = run_base / "current_run.json"
 
@@ -533,90 +558,23 @@ def cmd_update_threads(config, threads: int | None = None) -> int:
 
 
 def cmd_resume(config, verbose: bool, dry_run: bool = False, background: bool = False, config_path: str = "") -> int:
-    """Resume a stopped transfer.
-
-    Delegates to run_and_monitor() which handles both single_command and
-    per_repo modes correctly (including per_repo_isolated CLI homes).
-    """
-    if background:
-        return _run_in_background(config_path, verbose, dry_run, command="resume")
-
-    run_dir = _run_dir(config.report.output_dir)
-    logger = setup_logging(run_dir, verbose)
-
-    run_base = Path(config.report.output_dir).expanduser().resolve()
-    lock = RunLock(run_base / ".lock")
-    if not lock.acquire():
-        logger.info("Run in progress. Cannot resume while another run is active.")
-        return 1
-
-    try:
-        transfer = TransferRunner(config, JFrogCLI(config.jfrog.jfrog_cli_path))
-
-        if dry_run:
-            logger.info("Dry run: Would resume transfer")
-            transfer.run_and_monitor(run_dir, end_time=_end_timestamp(config), dry_run=True)
-            return 0
-
-        logger.info("Resuming transfer...")
-        _write_current_run(
-            run_base,
-            {"status": "running", "resumed_at": time.time(), "run_dir": str(run_dir)},
-        )
-
-        transfer_result = transfer.run_and_monitor(run_dir, end_time=_end_timestamp(config), dry_run=False)
-        logger.info("Transfer completed in %.1fs", transfer_result.ended_at - transfer_result.started_at)
-
-        if config.report.enabled:
-            source_client, target_client = _resolve_clients(config)
-            report_dir = run_dir / "reports"
-            jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-            result = generate_report(
-                source_client,
-                target_client,
-                report_dir,
-                config.report.repo_type,
-                detailed_comparison=config.report.detailed_comparison,
-                repos_file_for_comparison=config.report.repos_file_for_comparison,
-                enable_aql_queries=config.report.enable_aql_queries,
-                source_server_id=config.jfrog.source_server_id,
-                target_server_id=config.jfrog.target_server_id,
-                jf_cli=jf_cli,
-            )
-            logger.info("Report generated: %s", result.report_path)
-            _notify(config, result.report_path, logger)
-
-        _write_current_run(
-            run_base,
-            {"status": "completed", "ended_at": time.time(), "run_dir": str(run_dir)},
-        )
-
-        return 0
-    finally:
-        lock.release()
+    """Resume a stopped transfer."""
+    return _execute_transfer(config, verbose, dry_run, background, config_path, command="resume")
 
 
 def cmd_monitor(config, interval: int = 10) -> int:
     """Monitor transfer progress continuously, querying per-repo CLI homes when applicable."""
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
     runner = TransferRunner(config, jf_cli)
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+    run_base = _run_base(config)
 
     print(f"Monitoring transfer (interval: {interval}s). Press Ctrl+C to stop monitoring...")
     print("(Note: Transfer will continue running even if monitoring stops)\n")
 
     try:
         while True:
-            results = runner.status_all()
-
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Transfer Status:")
-            for name, status_text in results.items():
-                if len(results) > 1:
-                    print(f"\n  [{name}]")
-                    for line in (status_text or "").splitlines():
-                        print(f"    {line}")
-                else:
-                    print(status_text or "(no output)")
+            _print_status_results(runner.status_all())
 
             current = _read_current_run(run_base)
             if current:
@@ -633,7 +591,7 @@ def cmd_monitor(config, interval: int = 10) -> int:
 
 def cmd_simulate_missed(config, verbose: bool, days_ago: int = 2) -> int:
     """Simulate a missed schedule scenario for testing catch_up_if_missed."""
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+    run_base = _run_base(config)
     logger = setup_logging(run_base, verbose)
     
     # Create a fake last run time
@@ -682,27 +640,12 @@ def cmd_simulate_missed(config, verbose: bool, days_ago: int = 2) -> int:
 def cmd_report(config, verbose: bool) -> int:
     run_dir = _run_dir(config.report.output_dir)
     logger = setup_logging(run_dir, verbose)
-    source_client, target_client = _resolve_clients(config)
-    jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
-    result = generate_report(
-        source_client,
-        target_client,
-        run_dir / "reports",
-        config.report.repo_type,
-        detailed_comparison=config.report.detailed_comparison,
-        repos_file_for_comparison=config.report.repos_file_for_comparison,
-        enable_aql_queries=config.report.enable_aql_queries,
-        source_server_id=config.jfrog.source_server_id,
-        target_server_id=config.jfrog.target_server_id,
-        jf_cli=jf_cli,
-    )
-    logger.info("Report generated: %s", result.report_path)
-    _notify(config, result.report_path, logger)
+    _generate_report_and_notify(config, run_dir, logger)
     return 0
 
 
 def cmd_scheduler(config, verbose: bool) -> int:
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+    run_base = _run_base(config)
     logger = setup_logging(run_base, verbose)
 
     # Handle catch-up if missed runs
@@ -749,23 +692,9 @@ def cmd_scheduler(config, verbose: bool) -> int:
             continue
 
 
-def _notify(config, report_path: Path, logger) -> None:
-    try:
-        if config.notify.method == "email":
-            send_email(
-                config.notify.email,
-                subject="JFrog Transfer Report",
-                body=f"Report available at: {report_path}",
-            )
-        elif config.notify.method == "webhook":
-            post_webhook(
-                config.notify.webhook.url,
-                payload={"text": "JFrog Transfer Report", "path": str(report_path)},
-                headers=config.notify.webhook.headers,
-            )
-    except Exception as exc:
-        logger.error("Notification failed: %s", exc)
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     import logging

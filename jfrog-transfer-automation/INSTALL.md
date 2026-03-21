@@ -42,12 +42,23 @@ This guide covers installation and running `jfrog-transfer-automation` as a back
 #### Method 2: Manual Installation
 
 1. Open PowerShell or Command Prompt
-2. Navigate to the project directory
-3. Upgrade pip:
+2. Navigate to the **`jfrog-transfer-automation`** directory (where `pyproject.toml` is located):
+   ```powershell
+   cd C:\path\to\jfrog-transfer-automation
+   ```
+   > **Important:** You must run `pip install` from this directory, not the parent
+   > repository root. If you see `does not appear to be a Python project`, you are
+   > in the wrong directory.
+3. (Optional) Create and activate a virtual environment to keep dependencies isolated:
+   ```powershell
+   python -m venv .venv           # create (one time)
+   .venv\Scripts\Activate.ps1     # activate (each new terminal session)
+   ```
+4. Upgrade pip:
    ```powershell
    python -m pip install --upgrade pip
    ```
-4. Install the package:
+5. Install the package:
    ```powershell
    python -m pip install -e .
    ```
@@ -73,15 +84,50 @@ This guide covers installation and running `jfrog-transfer-automation` as a back
 #### Method 2: Manual Installation
 
 1. Open a terminal
-2. Navigate to the project directory
-3. Upgrade pip:
+2. Navigate to the **`jfrog-transfer-automation`** directory (where `pyproject.toml` is located):
+   ```bash
+   cd /path/to/jfrog-transfer-automation
+   ```
+   > **Important:** You must run `pip install` from this directory, not the parent
+   > repository root. If you see `does not appear to be a Python project`, you are
+   > in the wrong directory.
+3. (Optional) Create and activate a virtual environment to keep dependencies isolated:
+   ```bash
+   python3 -m venv .venv          # create (one time)
+   source .venv/bin/activate      # activate (each new terminal session)
+   ```
+4. Upgrade pip:
    ```bash
    python3 -m pip install --upgrade pip
    ```
-4. Install the package:
+5. Install the package:
    ```bash
    python3 -m pip install -e .
    ```
+
+### Updating After Code Changes
+
+The `pip install -e .` command installs the package in **editable mode**, meaning
+Python imports directly from your source files on disk. Any code changes you make
+are available immediately — no reinstall required.
+
+You only need to re-run `pip install -e .` if you change `pyproject.toml`
+(e.g., new dependencies, entry points, or package metadata).
+
+**Verify the install points to your source tree:**
+```bash
+pip show jfrog-transfer-automation
+```
+
+**Reinstall or uninstall if needed:**
+```bash
+# Reinstall over an existing install (safe to run any time)
+pip install -e .
+
+# Full uninstall + reinstall
+pip uninstall jfrog-transfer-automation
+pip install -e .
+```
 
 ### Post-Installation
 

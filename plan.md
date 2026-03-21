@@ -305,6 +305,109 @@ Deliverables: `jfrog-transfer-automation run-once --config config.yaml`,
 `jfrog-transfer-automation update-threads --config config.yaml [--threads N]`,
 `jfrog-transfer-automation clear-lock --config config.yaml`.
 
+11. **DRY refactoring** — eliminate repeated code across CLI commands and runner:
+    - **`_run_base(config)`**: extract `Path(config.report.output_dir).expanduser().resolve()`
+      which is repeated in 8 command handlers.
+    - **`_generate_report_and_notify(config, run_dir, logger)`**: the report-generation +
+      notification block is duplicated in `cmd_run_once`, `cmd_resume`, and `cmd_report`.
+    - **`_for_all_cli_homes(action)` in `TransferRunner`**: `status_all()`, `stop_all()`,
+      and `update_threads()` all iterate CLI homes with identical boilerplate (check
+      strategy, iterate or default, collect results, handle errors).  A higher-order helper
+      eliminates this three-way duplication.
+    - **`_make_env(cli_home_dir)` in `TransferRunner`**: the `os.environ.copy()` +
+      conditional `JFROG_CLI_HOME_DIR` assignment is repeated in `status()`, `stop()`,
+      `start_transfer()`, and `_adjust_threads()`.
+    - **`_print_status_results(results)`**: the status display formatting loop is
+      duplicated between `cmd_status` and `cmd_monitor`.
+    - **`_write_basic_report()` in `report/generator.py`**: the fallback "basic comparison"
+      report text is constructed identically in three branches.
+    - **Merge `cmd_run_once` / `cmd_resume` core**: both follow the same skeleton (lock →
+      run_and_monitor → report → notify → write completion status → release lock).  Extract
+      a shared `_execute_transfer()` core, with `cmd_run_once` adding its stale-status
+      detection as a pre-step.
+    - **Loop over source/target in `_resolve_clients` and `cmd_validate`**: the source and
+      target credential-extraction / validation blocks are near-identical mirror images.
+    - **AQL exclusion subtraction in `compare_adapter.py`**: the source/target subtraction
+      logic for Docker vs. non-Docker repos follows the same pattern and can be unified.
+
+Deliverables: cleaner, shorter code with no logic duplication; easier to maintain and extend.
+
+12. **Parallel batch transfers** in `per_repo` mode:
+    - The per-repo batch loop (`_run_per_repo_mode`) launches transfers sequentially because
+      `start_transfer` → `JFrogCLI.run` → `subprocess.run` blocks until each transfer
+      finishes — only one repo runs at a time despite batching.
+    - Add `run_background()` to `JFrogCLI` (`cli.py`) using `subprocess.Popen` for
+      non-blocking process launch.  Extract `_prepare_command()` from `run()` (DRY) so both
+      `run()` and `run_background()` share command-building and logging.
+    - Add `_prepare_transfer()` to `TransferRunner` extracting the shared thread-adjustment,
+      arg-building, and env-construction logic from `start_transfer()` (DRY) so both blocking
+      and background callers reuse it.
+    - Add `start_transfer_background()` to `TransferRunner` using `run_background()` +
+      `_prepare_transfer()`, returning a `Popen` handle.
+    - Update `start_transfer_per_repo()` to launch a background process, returning
+      `(log_path, Popen, file_handle)`.
+    - Add `_cleanup_repo_process()` helper for DRY process-kill + file-handle-close logic
+      (used in restart, end-time stop, and max-restart scenarios).
+    - Refactor `_run_per_repo_mode()` to launch all repos in a batch via non-blocking Popen,
+      then monitor using `process.poll()` instead of `jf rt transfer-files --status` parsing.
+
+13. **Stop-aware orchestration** for `per_repo` mode:
+    - When a user runs `stop` from another terminal, `cmd_stop` writes
+      `status: stopped` to `current_run.json` and sends `--stop` to each CLI
+      home.  However `_run_per_repo_mode` had no mechanism to detect this
+      external signal — it marked the stopped repos as "failed" and launched
+      the next batch.
+    - Add an optional `stop_requested` callback (``Callable[[], bool]``) to
+      `run_and_monitor()` → `_run_per_repo_mode()`.  The callback is checked
+      before launching each batch and inside the monitoring loop; when it
+      returns `True` the method kills active processes, skips remaining
+      batches, and returns status `"stopped"`.
+    - In `_execute_transfer()` (cli/main.py), pass a `_check_stop` closure
+      that reads `current_run.json` and returns `True` when status is
+      `"stopped"`.
+    - Preserve the `"stopped"` status in `current_run.json` (instead of
+      overwriting with `"completed"`) and do **not** update `last_run_time`
+      so the scheduler knows a full run did not complete.
+
+14. **Skip report generation on user-invoked stop**:
+    - When `stop` is explicitly invoked by the user, the transfer is
+      intentionally interrupted and a partial-progress report is not useful.
+      Skip `_generate_report_and_notify()` when the transfer result status
+      is `"stopped"`.
+    - In all other cases (completed, partial, stopped_by_schedule via
+      `end_time`) the report is still generated so the user can see progress.
+    - Document the expected behaviour in `QUICKSTART.md` under the
+      "Running Commands Alongside a Transfer" section.
+
+15. **Preserve `"partial"` status when repos fail** (e.g. stuck after max restarts):
+    - When some repos fail (stuck timeouts, exit code != 0) the runner returns
+      status `"partial"`.  Previously `_execute_transfer` mapped everything
+      that was not `"stopped"` to `"completed"` in `current_run.json`,
+      masking partial failures.
+    - Preserve the runner's `"partial"` status in `current_run.json` so the
+      scheduler and operator can distinguish a fully successful run from one
+      with failures.
+    - Still update `last_run_time` for `"partial"` runs — delta sync covers
+      whatever was missed, and the scheduler should not endlessly retry.
+    - Report is still generated for `"partial"` (useful to see what succeeded
+      and what failed).
+    - Document the full outcome matrix in `QUICKSTART.md`.
+
+16. **Preserve mid-run `update-threads` overrides across batches**:
+    - `_prepare_transfer()` unconditionally calls `_adjust_threads()` with the
+      config value every time a repo transfer is launched.  This overwrites
+      any `update-threads --threads N` override the user applied mid-run as
+      soon as the next batch starts.
+    - Add a `_threads_adjusted` set to `TransferRunner` that tracks which CLI
+      home directories have already had threads set during this run.
+    - `_prepare_transfer()` only calls `_adjust_threads()` when the CLI home
+      has **not** been seen yet.  First launch of each CLI home still applies
+      the config value; subsequent launches (restarts, later batches reusing
+      the same home) skip the call, preserving any mid-run override.
+    - `update_threads()` clears `_threads_adjusted` after applying the new
+      value so the override is not accidentally skipped on restart.
+    - Document the behaviour in `QUICKSTART.md`.
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -454,6 +557,12 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] `update-threads` CLI command for dynamic thread changes (even mid-run)
 - [x] Adapt `status`, `stop`, `resume`, `monitor` commands for `per_repo_isolated` strategy
 - [x] `clear-lock` CLI command to remove stale lock files after a crash
+- [x] DRY refactoring (extract shared helpers in cli/main.py, runner.py, report/generator.py)
+- [x] Parallel batch transfers in per_repo mode (non-blocking Popen-based execution)
+- [x] Stop-aware orchestration — honour external `stop` command across batch boundaries
+- [x] Skip report generation on user-invoked stop
+- [x] Preserve `"partial"` status in current_run.json when repos fail (stuck / exit code != 0)
+- [x] Preserve mid-run `update-threads` overrides across batches
 - [x] Catch-up missed runs functionality
 - [x] Schedule simulation/testing feature (simulate-missed command)
 - [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)

@@ -29,6 +29,31 @@ def _repo_names(repos: List[Dict]) -> List[str]:
     return sorted(set(names))
 
 
+def _write_basic_report(
+    report_path: Path,
+    source_repos: List[str],
+    target_repos: List[str],
+    missing_in_target: List[str],
+    missing_in_source: List[str],
+    error_prefix: Optional[str] = None,
+) -> None:
+    """Write a basic comparison report (used as fallback or when detailed mode is off)."""
+    lines = ["JFrog Transfer Comparison Report", ""]
+    if error_prefix:
+        lines.extend([error_prefix, "", "Falling back to basic comparison:", ""])
+    lines.extend([
+        f"Source repo count: {len(source_repos)}",
+        f"Target repo count: {len(target_repos)}",
+        "",
+        "Missing in target:",
+        *(missing_in_target or ["(none)"]),
+        "",
+        "Missing in source:",
+        *(missing_in_source or ["(none)"]),
+    ])
+    report_path.write_text("\n".join(lines))
+
+
 def generate_report(
     source_client: ArtifactoryClient,
     target_client: ArtifactoryClient,
@@ -102,53 +127,21 @@ def generate_report(
                 _write_json(summary_path, summary)
                 return ReportResult(report_path=report_path, summary_path=summary_path)
             except Exception as e:
-                report_lines = [
-                    "JFrog Transfer Comparison Report",
-                    "",
-                    f"Error during detailed comparison: {e}",
-                    "",
-                    "Falling back to basic comparison:",
-                    "",
-                    f"Source repo count: {len(source_repos)}",
-                    f"Target repo count: {len(target_repos)}",
-                    "",
-                    "Missing in target:",
-                    *(missing_in_target or ["(none)"]),
-                    "",
-                    "Missing in source:",
-                    *(missing_in_source or ["(none)"]),
-                ]
-                report_path.write_text("\n".join(report_lines))
+                _write_basic_report(
+                    report_path, source_repos, target_repos,
+                    missing_in_target, missing_in_source,
+                    error_prefix=f"Error during detailed comparison: {e}",
+                )
         else:
-            report_lines = [
-                "JFrog Transfer Comparison Report",
-                "",
-                f"Repos file not found: {repos_file_path}",
-                "Falling back to basic comparison:",
-                "",
-                f"Source repo count: {len(source_repos)}",
-                f"Target repo count: {len(target_repos)}",
-                "",
-                "Missing in target:",
-                *(missing_in_target or ["(none)"]),
-                "",
-                "Missing in source:",
-                *(missing_in_source or ["(none)"]),
-            ]
-            report_path.write_text("\n".join(report_lines))
+            _write_basic_report(
+                report_path, source_repos, target_repos,
+                missing_in_target, missing_in_source,
+                error_prefix=f"Repos file not found: {repos_file_path}",
+            )
     else:
-        report_lines = [
-            "JFrog Transfer Comparison Report",
-            "",
-            f"Source repo count: {len(source_repos)}",
-            f"Target repo count: {len(target_repos)}",
-            "",
-            "Missing in target:",
-            *(missing_in_target or ["(none)"]),
-            "",
-            "Missing in source:",
-            *(missing_in_source or ["(none)"]),
-        ]
-        report_path.write_text("\n".join(report_lines))
+        _write_basic_report(
+            report_path, source_repos, target_repos,
+            missing_in_target, missing_in_source,
+        )
 
     return ReportResult(report_path=report_path, summary_path=summary_path)
