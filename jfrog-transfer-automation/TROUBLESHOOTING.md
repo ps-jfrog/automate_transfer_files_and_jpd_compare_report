@@ -176,6 +176,118 @@ Common issues and solutions for `jfrog-transfer-automation`.
 - Reduce number of repos in `repos_file_for_comparison`
 - Increase `storage_calculation_wait_seconds` appropriately
 
+## Collecting Logs for JFrog Professional Services
+
+When opening a support request, please collect the artifacts described below.
+Two common scenarios are covered — use whichever applies (or both).
+
+### Understanding the two log levels
+
+| Setting | What it controls | Where logs appear |
+|---------|-----------------|-------------------|
+| `--verbose` flag | The **automation tool's** own Python logging (DEBUG level) — config resolution, API URLs, orchestration decisions | `runs/<timestamp>/run.log` and console |
+| `transfer.cli_log_level: "DEBUG"` in config | The **JFrog CLI** process logging — detailed transfer-files protocol messages, upload/download progress, retries | `runs/<timestamp>/logs/<repo>.log` (per-repo logs) |
+
+For most issues you need **both**: `--verbose` shows what the automation decided
+to do, and `cli_log_level: "DEBUG"` shows what the JFrog CLI actually did.
+
+---
+
+### Scenario A: Transfer completes partially — repositories failed (exit code 1)
+
+Repositories that finish with exit code 1 are logged as failed and marked in
+`current_run.json` with status `"partial"`.
+
+**Step 1 — Reproduce with full debug logging**
+
+Set `cli_log_level` to `DEBUG` in your config file:
+
+```yaml
+transfer:
+  cli_log_level: "DEBUG"   # captures detailed JFrog CLI output per repo
+```
+
+Then re-run with `--verbose`:
+
+```bash
+jfrog-transfer-automation run-once --config config.yaml --verbose
+```
+
+**Step 2 — Collect and send the following**
+
+| # | Artifact | Location / command |
+|---|----------|--------------------|
+| 1 | **Full run directory** (zip) | `zip -r failed-run.zip runs/<timestamp>/` |
+| 2 | **Orchestration log** | `runs/<timestamp>/run.log` |
+| 3 | **Per-repo transfer logs** (especially failed repos) | `runs/<timestamp>/logs/<repo>.log` |
+| 4 | **Run summary** | `runs/<timestamp>/summary.json` and `runs/current_run.json` |
+| 5 | **Config file** (redact tokens) | Your `config.yaml` — replace any `access_token` values with `***` |
+| 6 | **JFrog CLI version** | `jf --version` |
+| 7 | **Server config check** | `jf c show <source-server-id>` and `jf c show <target-server-id>` |
+| 8 | **Manual transfer test** for a failed repo | `jf rt transfer-files <source-server-id> <target-server-id> --include-repos "<failed-repo>"` |
+
+> **Tip:** The per-repo logs at `runs/<timestamp>/logs/<repo>.log` are the most
+> important file for diagnosing exit-code-1 failures. They contain the raw JFrog
+> CLI output including any error messages, retry attempts, and transfer protocol
+> details — but only at full detail when `cli_log_level` is set to `"DEBUG"`.
+
+---
+
+### Scenario B: Storage calculation fails with 401 Unauthorized
+
+This error occurs during report generation when the automation calls
+`POST /api/storageinfo/calculate` on the source or target Artifactory. The API
+requires **admin-level permissions** on the access token.
+
+**Step 1 — Verify credentials manually**
+
+Run these commands and capture the output:
+
+```bash
+# Show configured servers (verify URL and server ID)
+jf c show <source-server-id>
+jf c show <target-server-id>
+
+# Test the exact API that failed — storageinfo/calculate requires admin
+jf rt curl -X POST "/api/storageinfo/calculate" --server-id=<source-server-id>
+jf rt curl -X POST "/api/storageinfo/calculate" --server-id=<target-server-id>
+
+# Also test the read-only storage info endpoint
+jf rt curl -X GET "/api/storageinfo" --server-id=<source-server-id>
+jf rt curl -X GET "/api/storageinfo" --server-id=<target-server-id>
+
+# Test repository listing
+jf rt curl -X GET "/api/repositories?type=local" --server-id=<target-server-id>
+```
+
+**Step 2 — Reproduce with verbose logging**
+
+`--verbose` is sufficient here (no need for `cli_log_level: "DEBUG"` since this
+is a Python-side API call, not a JFrog CLI transfer):
+
+```bash
+jfrog-transfer-automation run-once --config config.yaml --verbose
+```
+
+**Step 3 — Collect and send the following**
+
+| # | Artifact | Location / command |
+|---|----------|--------------------|
+| 1 | **Orchestration log** | `runs/<timestamp>/run.log` (with `--verbose`) |
+| 2 | **Config file** (redact tokens) | Your `config.yaml` — replace any `access_token` values with `***` |
+| 3 | **Output of `jf c show`** | For both source and target server IDs |
+| 4 | **Output of `jf rt curl` commands** | All four commands from Step 1 above |
+| 5 | **JFrog CLI version** | `jf --version` |
+| 6 | **Token permissions** | Confirm whether the access token has **admin** scope on the target instance |
+
+> **Common causes:**
+> - The access token works for `transfer-files` (which uses the data-transfer
+>   API) but lacks the **admin** privilege required by `storageinfo/calculate`.
+> - The token has expired or been rotated since it was added to the CLI config.
+> - The URL is a platform URL but the token is scoped to a different instance.
+
+---
+
 ## Getting Help
 
 1. Check logs: `runs/<timestamp>/run.log`

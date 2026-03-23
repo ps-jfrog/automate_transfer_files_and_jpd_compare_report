@@ -86,16 +86,30 @@ See `README.md` for detailed documentation on transfer modes and `jfrog_cli_home
 
 ### Changing Transfer Threads Dynamically
 
-The `transfer.threads` setting controls how many worker threads JFrog CLI uses for
-`transfer-files`. The automation applies this setting via `jf rt transfer-settings`
-before each transfer starts.
+The `transfer.threads` setting controls how many worker threads JFrog CLI uses
+for each `transfer-files` process. By default JFrog CLI uses **8 threads**.
+You can increase this value (e.g. 16, 24, up to a maximum of 1024) or decrease
+it depending on the capacity of your source instance. See the JFrog documentation
+on [Controlling File Transfer Speed](https://docs.jfrog.com/integrations/docs/cli-for-jfrog-cloud-transfer#controlling-file-transfer-speed)
+for full details.
 
-**Between runs** — edit `config.yaml` and change the `transfer.threads` value. The new
-thread count takes effect on the next `run-once` or scheduled run.
+> **Important — monitor your source instance.**  While a transfer is running,
+> monitor the **CPU, memory, and network utilization** on your source Artifactory.
+> Increasing threads speeds up the transfer but places additional load on the
+> source. Reducing threads does the opposite. We recommend **increasing
+> gradually** and observing the impact before raising the value further.
 
-**During a running transfer** — use the built-in `update-threads` command. It re-reads
-the config and applies the thread setting to the default CLI home and/or every
-per-repo isolated CLI home directory automatically:
+The automation applies this setting via `jf rt transfer-settings` before each
+transfer starts. You can adjust the thread count in two ways:
+
+**Between runs** — edit `config.yaml` and change the `transfer.threads` value.
+The new thread count takes effect on the next `run-once` or scheduled run.
+You can re-run `jfrog-transfer-automation run-once` as many times as needed;
+each run resumes from where the previous one left off.
+
+**During a running transfer** — open a **new terminal window on the same
+machine** (as the same user that started the transfer) and use the built-in
+`update-threads` command:
 
 ```bash
 # Update threads to the value in config.yaml (edit config.yaml first)
@@ -105,8 +119,8 @@ jfrog-transfer-automation update-threads --config config.yaml
 jfrog-transfer-automation update-threads --config config.yaml --threads 16
 ```
 
-When using `per_repo_isolated`, the command discovers all CLI home directories under
-`<output_dir>/cli_homes/*/` and updates each one. Example output:
+When using `per_repo_isolated`, the command discovers all CLI home directories
+under `<output_dir>/cli_homes/*/` and updates each one. Example output:
 
 ```
 Updating transfer threads to 16 (strategy: per_repo_isolated)
@@ -117,14 +131,30 @@ Updating transfer threads to 16 (strategy: per_repo_isolated)
 Successfully updated threads to 16 across 3 CLI home(s).
 ```
 
-> **Note:** Thread changes take effect on the next transfer chunk, not immediately
-> on in-flight chunks.
+> **Note:** Thread changes take effect on the next transfer chunk, not
+> immediately on in-flight chunks.
 
 **Mid-run override persistence:** When you use `update-threads` during a run,
-the override is preserved for the remainder of that run.  New batches will
+the override is preserved for the remainder of that run. New batches will
 **not** reset threads back to the `config.yaml` value — the config value is
-only applied once per CLI home (the first time it is used in a run).  If a
+only applied once per CLI home (the first time it is used in a run). If a
 stuck transfer is restarted, the override is also preserved.
+
+> **Per-repo parallel mode — load multiplier warning**
+>
+> When running with `transfer.mode: "per_repo"` and
+> `transfer.jfrog_cli_home_strategy: "per_repo_isolated"`, the automation
+> launches up to `batch_size` `transfer-files` processes **in parallel**.
+> Each process uses `transfer.threads` threads independently, so the
+> effective load on your source Artifactory is roughly
+> **`batch_size` × `threads`** concurrent requests.
+>
+> For example, `batch_size: 4` with `threads: 16` produces up to **64**
+> concurrent transfer threads hitting the source instance simultaneously.
+> Monitoring CPU, memory, and network on the source becomes **critical** in
+> this mode to avoid degrading the performance of your production Artifactory.
+> Start with a conservative thread count and increase only after confirming
+> the source instance can handle the combined load.
 
 ### Building the Repository List
 
