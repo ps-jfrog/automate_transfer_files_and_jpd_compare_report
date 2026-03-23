@@ -84,6 +84,35 @@ transfer:
 
 See `README.md` for detailed documentation on transfer modes and `jfrog_cli_home_strategy`.
 
+### Pre-flight Connectivity Check
+
+Before starting any transfer, the automation runs
+`jf rt transfer-files --prechecks` to verify connectivity between the source
+and target Artifactory servers.  This check runs automatically — no extra
+configuration is needed.
+
+If the pre-flight check **fails**, the transfer is **not attempted**:
+
+- No data is transferred
+- No comparison report is generated
+- `current_run.json` is set to `status: "prechecks_failed"`
+- The full `--prechecks` output is logged so you can diagnose the issue
+
+Common causes of precheck failures:
+
+| Cause | Fix |
+|-------|-----|
+| Data-transfer plugin not installed on source | Install the [data-transfer](https://docs.jfrog.com/integrations/docs/cli-for-jfrog-cloud-transfer) plugin |
+| Network connectivity blocked between source and target | Check firewall rules, proxy settings |
+| Access token lacks required permissions | Use an admin-scoped token |
+| Server IDs misconfigured | Run `jf c show <server-id>` to verify |
+
+> **Tip:** You can test the precheck manually with:
+> ```bash
+> jf rt transfer-files <source-server-id> <target-server-id> \
+>     --include-repos "<any-repo>" --prechecks
+> ```
+
 ### Limiting Transfer Duration with `end_time`
 
 The `schedule.end_time` setting defines a daily cutoff time for transfers.
@@ -390,6 +419,7 @@ decides whether to generate a comparison report and update the scheduler's
 
 | Scenario | Status in `current_run.json` | Report generated? | `last_run_time` updated? |
 |---|---|---|---|
+| Pre-flight check failed (`--prechecks`) | `prechecks_failed` | **No** | **No** |
 | All repos transferred successfully | `completed` | Yes | Yes |
 | Some repos failed (stuck after max restarts, exit code != 0) | `partial` | Yes | Yes |
 | Configured `end_time` reached | `completed` | Yes | Yes |

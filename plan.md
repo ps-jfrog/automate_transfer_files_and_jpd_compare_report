@@ -452,6 +452,36 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       `--docker-generator` pytest CLI options so paths are not hardcoded.
     - Document how to run the integration test in `QUICKSTART.md`.
 
+19. **Pre-flight connectivity check with `--prechecks` before transfers**:
+    - **Problem**: when source↔target connectivity is broken (data-transfer
+      plugin missing, network unreachable, auth failures) the user only
+      discovers this after a transfer has started and failed — wasting time
+      and producing confusing error messages.
+    - **Solution**: before every actual `jf rt transfer-files` invocation, run
+      the same command with the `--prechecks` flag.  This validates connectivity
+      without transferring data.  If `--prechecks` fails, log a clear error
+      and exit immediately — skip the transfer and skip report generation.
+    - Applies to both `per_repo_isolated` and `default` CLI-home strategies.
+    - In `per_repo_isolated` mode, run `--prechecks` **once** (using the first
+      repo's CLI home) before launching any batches; the connectivity check is
+      source↔target and is the same regardless of repo.
+    - **Implementation layers**:
+      - `runner.py` — `_run_prechecks()`: builds a `--prechecks` command from
+        `_build_transfer_args`, executes synchronously, returns `(ok, output)`.
+      - `runner.py` — `_run_per_repo_mode()`: call `_run_prechecks` before the
+        first batch; abort with status `"prechecks_failed"` on failure.
+      - `runner.py` — `run_and_monitor()`: call `_run_prechecks` before the
+        single-command transfer; abort with status `"prechecks_failed"`.
+      - `cli/main.py` — `_execute_transfer()`: handle `"prechecks_failed"`
+        status — skip report, log actionable error, exit with code 1.
+    - **Deliverables**:
+      - [x] `_run_prechecks()` in `TransferRunner`
+      - [x] Pre-flight check in `_run_per_repo_mode()` (once before first batch)
+      - [x] Pre-flight check in `run_and_monitor()` for single-command mode
+      - [x] Handle `"prechecks_failed"` in `_execute_transfer()`
+      - [x] Document in `QUICKSTART.md` and `TROUBLESHOOTING.md`
+      - [x] Add checklist items
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -617,3 +647,4 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Transfer repo failures (exit code != 0) log actionable guidance referencing TROUBLESHOOTING.md
 - [x] E2E integration test (seed data, run-once + monitor + update-threads, stop + resume)
 - [x] Install scripts (install.ps1, install.sh)
+- [x] Pre-flight `--prechecks` connectivity check before transfers (per_repo_isolated + default)

@@ -64,24 +64,53 @@ def _automation_cmd(config_path: Path, *args: str) -> list[str]:
     return [CLI_CMD, *args, "--config", str(config_path)]
 
 
-def _wait_for_running(config_path: Path, timeout: int = 30) -> bool:
-    """Poll current_run.json until status is 'running' or timeout."""
+def _get_run_base(config_path: Path) -> Path:
     from jfrog_transfer_automation.config.loader import load_config
 
     config = load_config(str(config_path))
-    run_base = Path(config.report.output_dir).expanduser().resolve()
+    return Path(config.report.output_dir).expanduser().resolve()
+
+
+def _wait_for_running(config_path: Path, timeout: int = 30) -> bool:
+    """Poll current_run.json until status is 'running' (or early-exit on failure)."""
+    run_base = _get_run_base(config_path)
     current_run = run_base / "current_run.json"
     deadline = time.time() + timeout
     while time.time() < deadline:
         if current_run.exists():
             try:
                 data = json.loads(current_run.read_text())
-                if data.get("status") == "running":
+                status = data.get("status")
+                if status == "running":
                     return True
+                if status == "prechecks_failed":
+                    return False
             except (json.JSONDecodeError, OSError):
                 pass
         time.sleep(1)
     return False
+
+
+def _print_precheck_result(config_path: Path) -> None:
+    """Find the latest run.log and print precheck-related lines."""
+    run_base = _get_run_base(config_path)
+    current_run = run_base / "current_run.json"
+    run_dir = None
+    if current_run.exists():
+        try:
+            data = json.loads(current_run.read_text())
+            run_dir = data.get("run_dir")
+        except (json.JSONDecodeError, OSError):
+            pass
+    if not run_dir:
+        return
+    log_file = Path(run_dir) / "run.log"
+    if not log_file.exists():
+        return
+    for line in log_file.read_text().splitlines():
+        lower = line.lower()
+        if "precheck" in lower or "pre-flight" in lower or "prechecks" in lower:
+            print(f"  [run.log] {line.strip()}")
 
 
 def _clear_lock(config_path: Path) -> None:
@@ -177,10 +206,13 @@ class TestMultiTerminalWorkflow:
         )
 
         try:
-            assert _wait_for_running(config_path, timeout=30), (
-                "run-once did not reach 'running' status within 30s"
+            running = _wait_for_running(config_path, timeout=30)
+            _print_precheck_result(config_path)
+            assert running, (
+                "run-once did not reach 'running' status within 30s "
+                "(check run.log — prechecks may have failed)"
             )
-            print("  ✓ run-once is running")
+            print("  ✓ run-once is running (pre-flight check passed)")
 
             # ── Terminal 2: watch progress ──
             print("\n=== Terminal 2: starting monitor ===")

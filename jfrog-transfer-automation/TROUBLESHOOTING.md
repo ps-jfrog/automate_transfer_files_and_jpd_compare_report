@@ -24,6 +24,38 @@ Common issues and solutions for `jfrog-transfer-automation`.
 
 ## Transfer Issues
 
+### Pre-flight connectivity check failed (`prechecks_failed`)
+
+**Problem**: The automation runs `jf rt transfer-files --prechecks` before every
+transfer to verify source↔target connectivity.  If this check fails, no
+transfer is attempted and `current_run.json` shows `status: "prechecks_failed"`.
+
+**Common causes**:
+- The **data-transfer plugin** is not installed on the source Artifactory
+- Network connectivity between source and target is **blocked** (firewall, proxy)
+- The access token **lacks admin permissions** on source or target
+- The source or target **server ID is misconfigured** in JFrog CLI
+
+**Diagnosis steps**:
+
+```bash
+# 1. Verify server configs
+jf c show <source-server-id>
+jf c show <target-server-id>
+
+# 2. Run the precheck manually to see the full output
+jf rt transfer-files <source-server-id> <target-server-id> \
+    --include-repos "<any-repo>" --prechecks
+
+# 3. If using per_repo_isolated strategy, test from an isolated CLI home
+JFROG_CLI_HOME_DIR=runs/cli_homes/<repo> \
+    jf rt transfer-files <source-server-id> <target-server-id> \
+    --include-repos "<repo>" --prechecks
+```
+
+**Solution**: fix the underlying connectivity or permission issue, then re-run
+`run-once`.  The automation will repeat the precheck automatically.
+
 ### Transfer fails immediately
 
 **Problem**: `jf rt transfer-files` command fails.

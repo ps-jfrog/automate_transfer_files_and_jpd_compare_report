@@ -71,6 +71,7 @@ For production use, run the scheduler as a system service (systemd on Linux, lau
    - Calculates the next schedule window
    - Logs the next scheduled run time
    - Waits until the scheduled time
+   - Runs a **pre-flight connectivity check** (`--prechecks`) before the transfer — if the check fails, no transfer is attempted and `current_run.json` shows `prechecks_failed` (see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for diagnosis steps)
    - Runs the transfer at the scheduled time
    - Repeats indefinitely
 

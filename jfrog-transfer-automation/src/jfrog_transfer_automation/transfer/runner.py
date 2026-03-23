@@ -147,6 +147,45 @@ class TransferRunner:
         
         return args
 
+    def _run_prechecks(
+        self,
+        repos: List[str],
+        cli_home_dir: Optional[Path] = None,
+    ) -> tuple[bool, str]:
+        """Run ``jf rt transfer-files --prechecks`` to validate source↔target connectivity.
+
+        Returns ``(success, output)`` — *output* contains the CLI stdout/stderr
+        which is useful for diagnosing failures.
+        """
+        args = self._build_transfer_args(repos) + ["--prechecks"]
+        env = self._make_env(
+            cli_home_dir, JFROG_CLI_LOG_LEVEL=self.config.transfer.cli_log_level,
+        )
+        cwd = str(cli_home_dir) if cli_home_dir else None
+
+        logger.info("Running pre-flight connectivity check (--prechecks)...")
+        result = self.jf_cli.run(args, env=env, cwd=cwd)
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        output = output.strip()
+
+        if result.returncode != 0:
+            logger.error(
+                "Pre-flight check FAILED (exit code %d). "
+                "The source and target Artifactory servers could not establish "
+                "a connection for file transfer. Common causes:\n"
+                "  - The data-transfer plugin is not installed on the source instance\n"
+                "  - Network connectivity between source and target is blocked\n"
+                "  - The access token lacks the required permissions\n"
+                "  - The server IDs are misconfigured\n"
+                "Full --prechecks output:\n%s",
+                result.returncode, output,
+            )
+            return False, output
+
+        logger.info("Pre-flight connectivity check passed")
+        logger.debug("--prechecks output: %s", output)
+        return True, output
+
     def _get_cli_home_dir(self, repo: str, run_dir: Path) -> Optional[Path]:
         """Get isolated CLI home directory for a repo if strategy is per_repo_isolated.
         
@@ -506,6 +545,20 @@ class TransferRunner:
             )
 
         started_at = time.time()
+
+        # Run prechecks once using the first repo's CLI home
+        first_cli_home = self._get_cli_home_dir(repos[0], run_dir)
+        ok, precheck_output = self._run_prechecks(repos[:1], cli_home_dir=first_cli_home)
+        if not ok:
+            return TransferResult(
+                status="prechecks_failed",
+                started_at=started_at,
+                ended_at=time.time(),
+                repos=repos,
+                run_dir=run_dir,
+                message=f"Pre-flight connectivity check failed. Output:\n{precheck_output}",
+            )
+
         completed_repos: List[str] = []
         failed_repos: List[str] = []
         processes: dict = {}
@@ -701,6 +754,18 @@ class TransferRunner:
             )
         
         started_at = time.time()
+
+        ok, precheck_output = self._run_prechecks(repos)
+        if not ok:
+            return TransferResult(
+                status="prechecks_failed",
+                started_at=started_at,
+                ended_at=time.time(),
+                repos=repos,
+                run_dir=run_dir,
+                message=f"Pre-flight connectivity check failed. Output:\n{precheck_output}",
+            )
+
         logger.debug(f"Starting transfer at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started_at))}")
         self.start_transfer(repos, dry_run=False)
         logger.debug("Transfer command completed, checking final status...")

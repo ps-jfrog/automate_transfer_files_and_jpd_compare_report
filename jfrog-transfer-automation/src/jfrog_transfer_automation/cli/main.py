@@ -372,7 +372,20 @@ def _execute_transfer(
                 transfer_result.ended_at - transfer_result.started_at,
             )
 
-            if transfer_result.status == "stopped":
+            if transfer_result.status == "prechecks_failed":
+                logger.error(
+                    "Transfer aborted — pre-flight connectivity check failed. "
+                    "No transfer was attempted and no report will be generated.\n"
+                    "Fix the connectivity issue and re-run: "
+                    "jfrog-transfer-automation %s --config %s",
+                    command, config_path,
+                )
+                _write_current_run(
+                    run_base,
+                    {"status": "prechecks_failed", "ended_at": time.time(), "run_dir": str(run_dir)},
+                )
+                return 1
+            elif transfer_result.status == "stopped":
                 logger.info("Transfer was stopped by user — skipping report generation")
             elif config.report.enabled:
                 try:

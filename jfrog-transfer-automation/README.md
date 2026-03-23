@@ -4,6 +4,7 @@ Automates daily delta syncs using `jf rt transfer-files`, generates a high-level
 comparison report, and optionally sends notifications.
 
 ## Key features
+- **Pre-flight connectivity check** — validates source↔target connectivity before every transfer; fails fast with actionable guidance if the data-transfer plugin is missing, network is blocked, or permissions are insufficient
 - Daily scheduler with non-overlapping runs
 - Two transfer modes: `single_command` (default) and `per_repo` (with batching, stuck detection)
 - Per-repo isolated CLI home directories (optional)
