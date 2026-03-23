@@ -137,7 +137,9 @@ Creates a separate `JFROG_CLI_HOME_DIR` for each repository transfer.
 
 **How it works:**
 - Creates persistent isolated directories: `<output_dir>/cli_homes/<repo-name>/`
-- Each repository transfer uses its own CLI home directory
+- Server configs are imported from the default CLI home (`~/.jfrog`) via `jf c export/import`
+- The bootstrap validates that both the URL **and** access token are present; incomplete configs trigger a fresh import
+- If the pre-flight connectivity check fails from an isolated home, the automation **automatically re-bootstraps** — deletes the stale home, re-imports, and retries
 - Prevents state conflicts when processing multiple repositories in parallel
 - CLI homes persist across runs, preserving JFrog CLI transfer state for proper delta sync
 

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -205,13 +206,20 @@ class TransferRunner:
         """Check whether a server ID has a complete config (URL + credentials).
 
         ``jf c show`` can return exit code 0 even for a corrupt/empty entry,
-        so we also verify that the output contains a URL line.
+        so we verify the output contains both a URL and an access token.
         """
         check = self.jf_cli.run(["c", "show", server_id], env=env)
         if check.returncode != 0:
             return False
         output_lower = (check.stdout or "").lower()
-        return "url" in output_lower
+        has_url = "url" in output_lower
+        has_token = "access token" in output_lower
+        if has_url and not has_token:
+            logger.warning(
+                "Server '%s' has a URL but no access token — config may be incomplete",
+                server_id,
+            )
+        return has_url and has_token
 
     def _bootstrap_cli_home(self, cli_home_dir: Path) -> None:
         """Import source and target server configs into an isolated CLI home if not already present.
@@ -267,7 +275,7 @@ class TransferRunner:
             if not self._is_server_configured(server_id, env=env):
                 raise RuntimeError(
                     f"Server '{server_id}' was imported into {cli_home_dir} but appears "
-                    f"incomplete (no URL found). Delete {cli_home_dir} and retry."
+                    f"incomplete (missing URL or access token). Delete {cli_home_dir} and retry."
                 )
 
     def _get_all_cli_homes(self) -> List[Path]:
@@ -549,6 +557,15 @@ class TransferRunner:
         # Run prechecks once using the first repo's CLI home
         first_cli_home = self._get_cli_home_dir(repos[0], run_dir)
         ok, precheck_output = self._run_prechecks(repos[:1], cli_home_dir=first_cli_home)
+        if not ok and first_cli_home is not None:
+            logger.warning(
+                "Pre-flight check failed from isolated CLI home %s — "
+                "deleting and re-bootstrapping with fresh server configs",
+                first_cli_home,
+            )
+            shutil.rmtree(first_cli_home, ignore_errors=True)
+            first_cli_home = self._get_cli_home_dir(repos[0], run_dir)
+            ok, precheck_output = self._run_prechecks(repos[:1], cli_home_dir=first_cli_home)
         if not ok:
             return TransferResult(
                 status="prechecks_failed",

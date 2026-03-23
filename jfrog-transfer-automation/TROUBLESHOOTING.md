@@ -35,26 +35,41 @@ transfer is attempted and `current_run.json` shows `status: "prechecks_failed"`.
 - Network connectivity between source and target is **blocked** (firewall, proxy)
 - The access token **lacks admin permissions** on source or target
 - The source or target **server ID is misconfigured** in JFrog CLI
+- (**`per_repo_isolated` only**) The isolated CLI home has **stale or incomplete
+  server configs** — the access token was rotated after the initial bootstrap,
+  or `jf c export/import` produced an incomplete config entry
+
+**Auto re-bootstrap** (`per_repo_isolated` mode): if the precheck fails from an
+isolated CLI home, the automation **automatically deletes** that CLI home,
+re-imports fresh server configs from the default CLI home (`~/.jfrog`), and
+retries the precheck once.  If the retry also fails, the error is reported.
 
 **Diagnosis steps**:
 
 ```bash
-# 1. Verify server configs
+# 1. Verify the default CLI home works (this is what the automation exports from)
 jf c show <source-server-id>
 jf c show <target-server-id>
 
-# 2. Run the precheck manually to see the full output
+# 2. Run the precheck manually from the default CLI home
 jf rt transfer-files <source-server-id> <target-server-id> \
     --include-repos "<any-repo>" --prechecks
 
-# 3. If using per_repo_isolated strategy, test from an isolated CLI home
+# 3. If step 2 passes but the automation still fails, the isolated CLI home
+#    may have stale configs.  Delete all isolated homes and re-run:
+rm -rf runs/cli_homes/
+jfrog-transfer-automation run-once --config config.yaml --verbose
+
+# 4. To test from a specific isolated CLI home:
 JFROG_CLI_HOME_DIR=runs/cli_homes/<repo> \
     jf rt transfer-files <source-server-id> <target-server-id> \
     --include-repos "<repo>" --prechecks
 ```
 
-**Solution**: fix the underlying connectivity or permission issue, then re-run
-`run-once`.  The automation will repeat the precheck automatically.
+**Solution**: if the default CLI home's precheck passes (step 2), simply
+re-run `run-once` — the auto re-bootstrap will refresh the isolated homes.
+If the default CLI home also fails, fix the underlying connectivity or
+permission issue first.
 
 ### Transfer fails immediately
 

@@ -106,6 +106,14 @@ Common causes of precheck failures:
 | Network connectivity blocked between source and target | Check firewall rules, proxy settings |
 | Access token lacks required permissions | Use an admin-scoped token |
 | Server IDs misconfigured | Run `jf c show <server-id>` to verify |
+| Stale/incomplete config in isolated CLI home (`per_repo_isolated`) | Auto re-bootstrap handles this — see below |
+
+**`per_repo_isolated` auto re-bootstrap:** when using isolated CLI homes, if the
+precheck fails the automation automatically deletes the stale CLI home,
+re-imports fresh server configs from your default CLI home (`~/.jfrog`), and
+retries the precheck.  This handles cases where the access token was rotated
+or the initial `jf c export/import` produced an incomplete config.  You can
+also manually clear all isolated homes with `rm -rf runs/cli_homes/`.
 
 > **Tip:** You can test the precheck manually with:
 > ```bash

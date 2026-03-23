@@ -482,6 +482,29 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Document in `QUICKSTART.md` and `TROUBLESHOOTING.md`
       - [x] Add checklist items
 
+20. **Robust isolated CLI home bootstrap — auto re-bootstrap on precheck failure**:
+    - **Problem**: when using `per_repo_isolated` strategy, the
+      `_bootstrap_cli_home` method imports server configs via
+      `jf c export / jf c import`.  If the imported config is stale (token
+      rotated, config corrupted, incomplete import) the `_is_server_configured`
+      check still passes because it only looks for `"url"` in the output of
+      `jf c show`.  The subsequent `--prechecks` then fails with a 400
+      "Connectivity check between source and target Artifactory servers failed"
+      — even though the same command works from the default CLI home (`~/.jfrog`).
+    - **Fix 1 — Strengthen `_is_server_configured()`**: check for both `"url"`
+      **and** `"access token"` in the `jf c show` output, so incomplete configs
+      are detected and trigger a re-bootstrap instead of being skipped.
+    - **Fix 2 — Auto re-bootstrap on precheck failure**: in
+      `_run_per_repo_mode`, if `--prechecks` fails from an isolated CLI home,
+      delete the CLI home directory, re-bootstrap (fresh `jf c export/import`),
+      and retry `--prechecks` once.  If the retry also fails, report the error
+      as before.
+    - **Deliverables**:
+      - [x] `_is_server_configured()` checks for `"access token"` (not just `"url"`)
+      - [x] `_run_per_repo_mode()` retries precheck after re-bootstrap on failure
+      - [x] Update `TROUBLESHOOTING.md` with stale CLI home guidance
+      - [x] Add checklist items
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -648,3 +671,4 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] E2E integration test (seed data, run-once + monitor + update-threads, stop + resume)
 - [x] Install scripts (install.ps1, install.sh)
 - [x] Pre-flight `--prechecks` connectivity check before transfers (per_repo_isolated + default)
+- [x] Robust isolated CLI home bootstrap — auto re-bootstrap on precheck failure + stronger config check

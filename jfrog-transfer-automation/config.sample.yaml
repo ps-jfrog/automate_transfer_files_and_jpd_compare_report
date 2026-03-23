@@ -113,6 +113,9 @@ transfer:
   #   per_repo_isolated   — isolated home per repo (only meaningful with per_repo mode).
   #                         Each repo gets its own JFROG_CLI_HOME_DIR at <output_dir>/cli_homes/<repo>/
   #                         which is persistent across runs, preserving transfer state for delta sync.
+  #                         Server configs are imported from the default CLI home (~/.jfrog) on first use.
+  #                         If the pre-flight check fails, the isolated home is automatically
+  #                         re-bootstrapped with fresh configs (self-healing on token rotation).
   jfrog_cli_home_strategy: "default"
 
   # Log level passed through to JFrog CLI where supported (e.g. DEBUG, INFO, WARN, ERROR).
