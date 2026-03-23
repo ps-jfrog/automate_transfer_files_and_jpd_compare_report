@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Union
 
 import requests
 
+from jfrog_transfer_automation.util import HINT_SCENARIO_B
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,13 +37,48 @@ class ArtifactoryClient:
             Full URL to the API endpoint
         """
         base = self.base_url.rstrip("/")
-        # Check if base_url already includes /artifactory
         if base.endswith("/artifactory"):
-            # Already has /artifactory, just append the endpoint
             return f"{base}/{endpoint}"
         else:
-            # Platform URL, need to add /artifactory
             return f"{base}/artifactory/{endpoint}"
+
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        context: str = "",
+    ) -> requests.Response:
+        """Send an HTTP request with consistent error handling.
+
+        On failure, logs a human-readable message with the URL, status code,
+        and a reference to TROUBLESHOOTING.md before re-raising.
+        """
+        url = self._artifactory_api_url(endpoint)
+        func = requests.post if method.upper() == "POST" else requests.get
+        response = func(
+            url,
+            headers=self._headers(),
+            timeout=self.timeout_seconds,
+            verify=self.verify_ssl,
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError:
+            label = context or endpoint
+            if response.status_code == 401:
+                logger.error(
+                    "%s failed: 401 Unauthorized for %s. "
+                    "The access token may lack admin permissions or has expired. %s",
+                    label, url, HINT_SCENARIO_B,
+                )
+            else:
+                logger.error(
+                    "%s failed: HTTP %d for %s. %s",
+                    label, response.status_code, url, HINT_SCENARIO_B,
+                )
+            raise
+        return response
 
     def calculate_storage(self, wait_seconds: int = 0) -> None:
         """
@@ -50,36 +87,20 @@ class ArtifactoryClient:
         Args:
             wait_seconds: Fixed wait time after API call (default: use instance config)
         """
-        url = self._artifactory_api_url("api/storageinfo/calculate")
-        response = requests.post(
-            url,
-            headers=self._headers(),
-            timeout=self.timeout_seconds,
-            verify=self.verify_ssl,
-        )
-        response.raise_for_status()
-        
+        response = self._request("POST", "api/storageinfo/calculate",
+                                 context="Storage calculation")
         response_data = response.json()
         logger.info(f"Storage calculation scheduled: {response_data.get('info', 'N/A')}")
-        
-        # Use instance config if not provided
+
         wait_seconds = wait_seconds or self.storage_calculation_wait_seconds
-        
-        # Fixed wait time
         if wait_seconds > 0:
             logger.info(f"Waiting {wait_seconds} seconds for storage calculation to complete...")
             time.sleep(wait_seconds)
             logger.info("Storage calculation wait completed")
 
     def get_storageinfo(self) -> Dict[str, Any]:
-        url = self._artifactory_api_url("api/storageinfo")
-        response = requests.get(
-            url,
-            headers=self._headers(),
-            timeout=self.timeout_seconds,
-            verify=self.verify_ssl,
-        )
-        response.raise_for_status()
+        response = self._request("GET", "api/storageinfo",
+                                 context="Storage info retrieval")
         return response.json()
 
     def get_repositories(self, repo_type: Union[str, List[str]]) -> List[Dict[str, Any]]:
@@ -108,12 +129,6 @@ class ArtifactoryClient:
     
     def _get_repositories_single_type(self, repo_type: str) -> List[Dict[str, Any]]:
         """Get repositories for a single type."""
-        url = self._artifactory_api_url(f"api/repositories?type={repo_type}")
-        response = requests.get(
-            url,
-            headers=self._headers(),
-            timeout=self.timeout_seconds,
-            verify=self.verify_ssl,
-        )
-        response.raise_for_status()
+        response = self._request("GET", f"api/repositories?type={repo_type}",
+                                 context=f"Repository listing (type={repo_type})")
         return response.json()

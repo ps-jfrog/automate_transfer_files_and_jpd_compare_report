@@ -84,6 +84,45 @@ transfer:
 
 See `README.md` for detailed documentation on transfer modes and `jfrog_cli_home_strategy`.
 
+### Limiting Transfer Duration with `end_time`
+
+The `schedule.end_time` setting defines a daily cutoff time for transfers.
+When set, any running transfer — whether started via `run-once`, `resume`,
+or the `scheduler` — is **gracefully stopped** when the clock passes this time.
+
+```yaml
+schedule:
+  start_time: "01:00"
+  end_time: "05:00"        # stop transfers at 5:00 AM (set to null to disable)
+  timezone: "America/Los_Angeles"
+```
+
+**How it works:**
+
+1. When a transfer starts, the automation computes an absolute cutoff
+   timestamp from `end_time` in the configured `timezone`.
+2. The monitoring loop checks the clock on every iteration
+   (`poll_interval_seconds`).
+3. When the cutoff is reached:
+   - In **per-repo mode**: all active transfer processes in the current
+     batch are killed immediately, and remaining batches are skipped.
+   - In **single-command mode**: `jf rt transfer-files --stop` is sent.
+4. A comparison **report is still generated** (unlike a user-invoked `stop`),
+   and `last_run_time` is updated so the scheduler knows the window was
+   covered.
+5. The transfer can be **resumed** later — JFrog CLI's transfer state tracks
+   which files were already sent, so the next `run-once` or scheduled run
+   picks up where this one left off.
+
+> **Tip:** If you only want to run transfers during off-peak hours
+> (e.g. 1 AM–5 AM), set `start_time: "01:00"` and `end_time: "05:00"`.
+> The scheduler will start a transfer at 1 AM and automatically stop it
+> at 5 AM if it hasn't finished.  The next night's run resumes from
+> where the previous one stopped.
+
+Set `end_time: null` (or omit it) to let transfers run to completion
+with no time limit.
+
 ### Changing Transfer Threads Dynamically
 
 The `transfer.threads` setting controls how many worker threads JFrog CLI uses
@@ -399,3 +438,87 @@ jfrog-transfer-automation run-once --config config.yaml --background
 # Monitor in another terminal
 jfrog-transfer-automation monitor --config config.yaml
 ```
+
+---
+
+## Running the Integration Test
+
+An end-to-end integration test exercises the full workflow — seeding Docker
+images into the source repos, running transfers with concurrent `monitor` /
+`update-threads`, and testing the `stop` → `resume` sequence — against live
+Artifactory instances.
+
+### Prerequisites
+
+- JFrog CLI configured with both source and target server IDs (e.g. `app1`,
+  `app2`)
+- Docker daemon running
+- `docker_image_generator.py` available (from
+  [ps-jfrog/charts](https://github.com/ps-jfrog/charts/blob/master/ps/publish_to_artifactory/docker_publish))
+- Repos in your `transfer.include_repos_file` exist in both source and target
+- Data-transfer plugin installed on the source instance
+
+### Install test dependencies
+
+```bash
+pip install pytest
+```
+
+### Run all three stages (seed + transfer + stop/resume)
+
+All `pytest` commands must be run **from the `jfrog-transfer-automation/`
+directory** so that pytest discovers the `tests/integration/conftest.py` that
+registers the custom CLI options (`--config`, `--docker-generator`, etc.):
+
+```bash
+cd jfrog-transfer-automation/
+
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config /path/to/test_schedule/config.yaml \
+    --docker-generator /path/to/docker_image_generator.py \
+    --docker-username app1user
+```
+Example:
+```
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config ../test_schedule/config.yaml \
+    --docker-generator /Users/sureshv/mycode/github-sv/utils/publish_to_artifactory/docker_publish/docker_image_generator.py \
+    --docker-username app1user \
+    --image-count 2 \
+    --image-size-mb 5
+```
+
+### Skip the seed stage (data already exists)
+
+```bash
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config /path/to/test_schedule/config.yaml \
+    -k "not seed"
+```
+
+### Run only the stop/resume test
+
+```bash
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config /path/to/test_schedule/config.yaml \
+    -k "TestStopAndResume"
+```
+
+### Customise image size and count
+
+```bash
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config config.yaml \
+    --docker-generator /path/to/docker_image_generator.py \
+    --image-count 2 \
+    --image-size-mb 5
+```
+
+### Test stages
+
+The test mirrors the "Typical multi-terminal workflow" documented above.
+
+| Stage | Test class | What it does |
+|-------|-----------|-------------|
+| 1. Seed | `TestSeedData` | Publishes Docker images to every source repo |
+| 2. Workflow | `TestMultiTerminalWorkflow` | `run-once` → `monitor` → `update-threads` → `stop` → verify clean exit → `resume` |

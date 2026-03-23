@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
+import requests
+
 from jfrog_transfer_automation.jfrog.artifactory_api import ArtifactoryClient
 from jfrog_transfer_automation.jfrog.cli import JFrogCLI
+from jfrog_transfer_automation.util import HINT_SCENARIO_B
 from jfrog_transfer_automation.report.compare_adapter import (
     compare_repositories,
     generate_detailed_comparison_report,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,8 +77,15 @@ def generate_report(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     ts_suffix = f"-{timestamp}"
 
-    source_client.calculate_storage()
-    target_client.calculate_storage()
+    for label, client in [("source", source_client), ("target", target_client)]:
+        try:
+            client.calculate_storage()
+        except requests.exceptions.HTTPError:
+            logger.warning(
+                "Storage calculation failed for %s — report will use "
+                "previously cached storage data. %s",
+                label, HINT_SCENARIO_B,
+            )
 
     source_storage = source_client.get_storageinfo()
     target_storage = target_client.get_storageinfo()

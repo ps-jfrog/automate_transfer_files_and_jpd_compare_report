@@ -20,6 +20,7 @@ from jfrog_transfer_automation.notify.webhook import post_webhook
 from jfrog_transfer_automation.report.generator import generate_report
 from jfrog_transfer_automation.transfer.locks import RunLock
 from jfrog_transfer_automation.transfer.runner import TransferRunner
+from jfrog_transfer_automation.util import HINT_GENERAL
 from jfrog_transfer_automation.util.time import ScheduleWindow, get_missed_windows, next_window, parse_hhmm, sleep_seconds_until
 
 
@@ -374,7 +375,18 @@ def _execute_transfer(
             if transfer_result.status == "stopped":
                 logger.info("Transfer was stopped by user — skipping report generation")
             elif config.report.enabled:
-                _generate_report_and_notify(config, run_dir, logger)
+                try:
+                    _generate_report_and_notify(config, run_dir, logger)
+                except Exception as exc:
+                    logger.error("Report generation failed: %s", exc)
+                    logger.error(
+                        "The transfer itself completed (status: %s). %s",
+                        transfer_result.status, HINT_GENERAL,
+                    )
+                    logger.error(
+                        "You can retry report generation independently with: "
+                        "jfrog-transfer-automation report --config config.yaml"
+                    )
 
             final_status = transfer_result.status if transfer_result.status in ("stopped", "partial") else "completed"
             _write_current_run(

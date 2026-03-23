@@ -408,6 +408,50 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       value so the override is not accidentally skipped on restart.
     - Document the behaviour in `QUICKSTART.md`.
 
+17. **Graceful error handling with actionable customer guidance**:
+    - **Problem**: when Artifactory REST API calls fail (e.g. `401 Unauthorized`
+      on `POST /api/storageinfo/calculate`), `response.raise_for_status()` in
+      `ArtifactoryClient` raises an unhandled `HTTPError` that crashes the
+      entire process with a raw Python traceback.  The customer sees no guidance
+      on what went wrong or how to fix it.  Similarly, when repos fail with
+      exit code 1, the log says "Transfer failed" but does not tell the customer
+      what to collect for support.
+    - **Layer 1 — `artifactory_api.py`**: add a `_request()` helper (DRY) that
+      wraps `requests.get`/`post` with consistent error handling.  On HTTP
+      errors, log a human-readable message including the URL, status code, and
+      a reference to the relevant TROUBLESHOOTING.md scenario before re-raising.
+    - **Layer 2 — `generator.py`**: wrap each `calculate_storage()` call in
+      try/except so report generation degrades gracefully (uses stale/cached
+      storage data) instead of aborting.  Log a warning with TROUBLESHOOTING.md
+      reference.
+    - **Layer 3 — `cli/main.py`**: wrap `_generate_report_and_notify()` in
+      try/except so the process completes cleanly even when report generation
+      fails.  Log the error, reference TROUBLESHOOTING.md Scenario B, and tell
+      the customer they can retry with
+      `jfrog-transfer-automation report --config config.yaml`.  Ensure
+      `current_run.json` is still updated and the lock is released.
+    - **Layer 4 — `runner.py`**: when a repo transfer exits with code != 0,
+      append a log line referencing TROUBLESHOOTING.md Scenario A so the
+      customer knows what to collect for JFrog Professional Services.
+
+18. **End-to-end integration test** for the full transfer workflow:
+    - Create `tests/integration/test_e2e_transfer_workflow.py` that exercises
+      the complete lifecycle against live Artifactory instances:
+      1. **Seed test data**: use `docker_image_generator.py` to publish Docker
+         images to every source repo listed in the config's
+         `transfer.include_repos_file`.  Reuse `extract_cli_config` to obtain
+         the source URL and access token (DRY — no shell `jf c export` pipe).
+      2. **run-once + monitor + update-threads**: start `run-once` in a
+         background process, concurrently run `monitor` and
+         `update-threads --threads N`, then let the transfer complete.
+      3. **stop + resume**: start a new `run-once`, send `stop` from a
+         concurrent process (simulating a second terminal), verify `run-once`
+         exits cleanly (skips report, releases lock), then `resume` to
+         completion.
+    - Add `tests/integration/conftest.py` with `--config` and
+      `--docker-generator` pytest CLI options so paths are not hardcoded.
+    - Document how to run the integration test in `QUICKSTART.md`.
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -567,4 +611,9 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Schedule simulation/testing feature (simulate-missed command)
 - [x] Optimize catch-up to run a single transfer for all missed windows (delta sync covers full backlog)
 - [x] TROUBLESHOOTING.md documentation
+- [x] Graceful API error handling in ArtifactoryClient with meaningful messages and TROUBLESHOOTING.md references
+- [x] Report generation degrades gracefully on storage-calculation failure instead of crashing
+- [x] Transfer execution survives report-generation failures (lock released, status written)
+- [x] Transfer repo failures (exit code != 0) log actionable guidance referencing TROUBLESHOOTING.md
+- [x] E2E integration test (seed data, run-once + monitor + update-threads, stop + resume)
 - [x] Install scripts (install.ps1, install.sh)

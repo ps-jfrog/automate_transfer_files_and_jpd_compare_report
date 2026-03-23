@@ -29,7 +29,7 @@ schedule:
 
 - **`timezone`**: IANA timezone name (e.g., "America/Los_Angeles", "UTC", "Europe/London")
 - **`start_time`**: Daily transfer start time in 24-hour format (e.g., "21:42" for 9:42 PM)
-- **`end_time`**: Optional end time for the schedule window. If `null`, transfers can run indefinitely
+- **`end_time`**: Optional daily cutoff time (HH:MM). When set, any running transfer is gracefully stopped at this time — active processes are killed, a report is generated, and `last_run_time` is updated. The next run resumes where this one stopped. Set to `null` to let transfers run to completion with no time limit
 - **`run_on_startup`**: If `true`, runs a transfer immediately when the scheduler starts, then continues with scheduled runs
 - **`catch_up_if_missed`**: If `true`, automatically detects and runs transfers for missed schedule windows when the scheduler starts
 

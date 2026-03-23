@@ -178,7 +178,7 @@ Common issues and solutions for `jfrog-transfer-automation`.
 
 ## Collecting Logs for JFrog Professional Services
 
-When opening a support request, please collect the artifacts described below.
+Please collect the artifacts described below.
 Two common scenarios are covered — use whichever applies (or both).
 
 ### Understanding the two log levels
@@ -248,7 +248,7 @@ Run these commands and capture the output:
 jf c show <source-server-id>
 jf c show <target-server-id>
 
-# Test the exact API that failed — storageinfo/calculate requires admin
+# Test the exact API that failed — storageinfo/calculate requires admin permissions
 jf rt curl -X POST "/api/storageinfo/calculate" --server-id=<source-server-id>
 jf rt curl -X POST "/api/storageinfo/calculate" --server-id=<target-server-id>
 

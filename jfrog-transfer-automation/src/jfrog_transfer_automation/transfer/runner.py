@@ -15,6 +15,7 @@ from typing import Callable, List, Optional
 from jfrog_transfer_automation.config.model import AppConfig
 from jfrog_transfer_automation.jfrog.cli import JFrogCLI
 from jfrog_transfer_automation.transfer.repo_list import load_repos
+from jfrog_transfer_automation.util import HINT_SCENARIO_A
 
 logger = logging.getLogger(__name__)
 
@@ -581,7 +582,11 @@ class TransferRunner:
                             completed_repos.append(repo)
                             logger.info(f"Transfer completed for {repo} (exit code 0)")
                         else:
-                            logger.error(f"Transfer failed for {repo} (exit code {rc})")
+                            logger.error(
+                                f"Transfer failed for {repo} (exit code {rc}). "
+                                "Check the per-repo log at runs/<timestamp>/logs/%s.log for details.",
+                                repo,
+                            )
                             failed_repos.append(repo)
                         continue
 
@@ -637,6 +642,12 @@ class TransferRunner:
         else:
             status_label = "partial"
         message = f"Completed: {len(completed_repos)}, Failed: {len(failed_repos)}"
+
+        if failed_repos:
+            logger.error(
+                "The following repositories failed: %s. %s",
+                ", ".join(failed_repos), HINT_SCENARIO_A,
+            )
 
         logger.debug(f"=== _run_per_repo_mode: Completed ===")
         logger.debug(f"Total time: {ended_at - started_at:.1f}s, Status: {status_label}, {message}")

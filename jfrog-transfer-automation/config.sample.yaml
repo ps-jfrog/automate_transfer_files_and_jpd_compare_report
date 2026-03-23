@@ -29,8 +29,11 @@ schedule:
   # Daily window start in 24-hour HH:MM local time (required for scheduler / missed-window logic).
   start_time: "01:00"
 
-  # Optional daily window end in HH:MM, or null for no end bound. Used with scheduling logic;
-  # set to null if you only need a single daily start time.
+  # Optional daily cutoff time in HH:MM.  When set, any running transfer
+  # (run-once, resume, or scheduler) is gracefully stopped when the clock
+  # passes this time.  Active transfer processes are killed, a comparison
+  # report is still generated, and the transfer can be resumed later.
+  # Set to null (or omit) to let transfers run to completion with no time limit.
   end_time: "05:00"
 
   # If true, run one transfer immediately when the scheduler process starts, then continue on schedule.
