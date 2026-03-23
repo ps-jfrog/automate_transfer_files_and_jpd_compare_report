@@ -523,7 +523,7 @@ pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
     --docker-generator /Users/sureshv/mycode/github-sv/utils/publish_to_artifactory/docker_publish/docker_image_generator.py \
     --docker-username app1user \
     --image-count 2 \
-    --image-size-mb 5
+    --image-size-mb 1
 ```
 
 ### Skip the seed stage (data already exists)
