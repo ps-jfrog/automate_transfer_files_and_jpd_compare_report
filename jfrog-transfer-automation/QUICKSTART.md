@@ -40,7 +40,7 @@ jfrog:
 transfer:
   include_repos_file: "all_local_repos_in_prod.txt"  # File with repo keys (one per line)
   mode: "per_repo"                       # Per-repo transfers with isolation
-  threads: 8                             # Transfer worker threads per repo
+  threads: 256                             # Transfer worker threads per repo
   batch_size: 4                          # Repos processed in parallel
   max_total_threads: 1024                # Global safety cap (see thread tuning note below)
   adaptive_threads: false                # Redistribute freed threads (see thread tuning note below)
