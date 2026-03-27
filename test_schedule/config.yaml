@@ -22,16 +22,20 @@ transfer:
   mode: "per_repo"  # Options: "single_command" | "per_repo"
                          # - single_command: One command for all repos (default, faster for small sets)
                          # - per_repo: Separate command per repo (better for large sets, with batching and stuck detection)
-  threads: 9
+  threads: 40
   filestore: false
   ignore_state: false
   batch_size: 2  # Only used in per_repo mode: number of repos to process in parallel
+  max_total_threads: 40  # global ceiling
+  adaptive_threads: true   # redistribute freed threads to active repos
   stuck_timeout_seconds: 600  # Only used in per_repo mode: seconds before considering a transfer stuck
   poll_interval_seconds: 60
   jfrog_cli_home_strategy: "per_repo_isolated"  # Options: "default" | "per_repo_isolated"
                                        # - default: Use shared JFrog CLI home directory
                                        # - per_repo_isolated: Create isolated CLI home per repo (only for per_repo mode)
   cli_log_level: "DEBUG"  # DEBUG, INFO, WARN, ERROR
+
+
 
 report:
   enabled: true
