@@ -40,8 +40,10 @@ jfrog:
 transfer:
   include_repos_file: "all_local_repos_in_prod.txt"  # File with repo keys (one per line)
   mode: "per_repo"                       # Per-repo transfers with isolation
-  threads: 8                             # Transfer worker threads
+  threads: 8                             # Transfer worker threads per repo
   batch_size: 4                          # Repos processed in parallel
+  max_total_threads: 1024                # Global safety cap (see thread tuning note below)
+  adaptive_threads: false                # Redistribute freed threads (see thread tuning note below)
   stuck_timeout_seconds: 600             # Restart if stuck for 10 minutes
   jfrog_cli_home_strategy: "per_repo_isolated"  # Isolated CLI home per repo
   cli_log_level: "INFO"
@@ -60,6 +62,13 @@ report:
 > written to `/opt/transfer/runs/` regardless of where you run the command.
 > This applies to `transfer.include_repos_file`, `report.output_dir`, and
 > `report.repos_file_for_comparison`.  Use absolute paths to bypass this.
+
+> **Thread tuning:** The `threads` × `batch_size` product determines total
+> load on the source Artifactory. Use
+> [`max_total_threads`](#controlling-total-thread-load-max_total_threads) to
+> enforce a global safety cap, and
+> [`adaptive_threads`](#adaptive-thread-redistribution-adaptive_threads) to
+> automatically redistribute freed capacity when repos finish early.
 
 All other settings have sensible defaults. See `config.sample.yaml` for the full list with comments.
 
