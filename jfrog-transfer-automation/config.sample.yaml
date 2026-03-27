@@ -90,8 +90,11 @@ transfer:
   #   per_repo       — one transfer per repo; supports batch_size and stuck_timeout_seconds.
   mode: "single_command"
 
-  # Number of worker threads for transfer; applied via `jf rt transfer-settings` before transfer-files runs.
-  threads: 8
+  # Number of worker threads per transfer-files process.  Applied via `jf rt transfer-settings`.
+  # Higher values (e.g. 256) avoid transfers getting stuck at low thread counts.
+  # In per_repo mode each repo gets its own process, so effective total = batch_size × threads.
+  # Use max_total_threads (below) to cap the combined total.
+  threads: 256
 
   # Whether to include filestore-related transfer options when invoking the CLI (per product/CLI support).
   filestore: false
@@ -101,6 +104,20 @@ transfer:
 
   # per_repo mode only: max number of repos to drive in parallel per batch.
   batch_size: 4
+
+  # Safety cap: maximum total threads across all concurrent transfers in a batch.
+  # Effective per-repo threads = min(threads, max_total_threads ÷ active_repos_in_batch).
+  # Set to null (or omit) to disable the cap (total = batch_size × threads).
+  # Example: threads=256, batch_size=4, max_total_threads=1024 → each repo gets 256 threads.
+  #          threads=512, batch_size=4, max_total_threads=1024 → each repo is capped to 256.
+  max_total_threads: 1024
+
+  # When true and max_total_threads is set, the automation redistributes freed threads to
+  # still-active repos as others complete within a batch.  The boost is capped by `threads`
+  # (per-repo ceiling), so set `threads` >= `max_total_threads` for maximum benefit.
+  # Example: threads=1024, batch_size=4, max_total_threads=1024 → starts at 256/repo;
+  #          after 2 repos finish the remaining 2 are boosted to 512/repo.
+  adaptive_threads: false
 
   # per_repo mode only: seconds without progress before treating a repo transfer as stuck for recovery/logging.
   stuck_timeout_seconds: 600
@@ -113,9 +130,10 @@ transfer:
   #   per_repo_isolated   — isolated home per repo (only meaningful with per_repo mode).
   #                         Each repo gets its own JFROG_CLI_HOME_DIR at <output_dir>/cli_homes/<repo>/
   #                         which is persistent across runs, preserving transfer state for delta sync.
-  #                         Server configs are imported from the default CLI home (~/.jfrog) on first use.
-  #                         If the pre-flight check fails, the isolated home is automatically
-  #                         re-bootstrapped with fresh configs (self-healing on token rotation).
+  #                         The first repo's CLI home is bootstrapped from ~/.jfrog via jf c export/import,
+  #                         then validated with --prechecks.  Its config file is copied to all other
+  #                         CLI homes, ensuring every repo has identical, known-good credentials.
+  #                         If a transfer fails with a 401 auth error, the config is re-synced and retried.
   jfrog_cli_home_strategy: "default"
 
   # Log level passed through to JFrog CLI where supported (e.g. DEBUG, INFO, WARN, ERROR).

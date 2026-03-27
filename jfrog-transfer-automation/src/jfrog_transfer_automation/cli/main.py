@@ -19,7 +19,7 @@ from jfrog_transfer_automation.notify.emailer import send_email
 from jfrog_transfer_automation.notify.webhook import post_webhook
 from jfrog_transfer_automation.report.generator import generate_report
 from jfrog_transfer_automation.transfer.locks import RunLock
-from jfrog_transfer_automation.transfer.runner import TransferRunner
+from jfrog_transfer_automation.transfer.runner import TransferRunner, effective_threads
 from jfrog_transfer_automation.util import HINT_GENERAL
 from jfrog_transfer_automation.util.time import ScheduleWindow, get_missed_windows, next_window, parse_hhmm, sleep_seconds_until
 
@@ -431,7 +431,21 @@ def cmd_validate(config) -> int:
         raise RuntimeError("jfrog.source_server_id is required in config")
     if not config.jfrog.target_server_id:
         raise RuntimeError("jfrog.target_server_id is required in config")
-    
+
+    cap = config.transfer.max_total_threads
+    if cap is not None:
+        if cap < 1:
+            raise RuntimeError("transfer.max_total_threads must be a positive integer (or null to disable)")
+        if cap < config.transfer.batch_size:
+            raise RuntimeError(
+                f"transfer.max_total_threads ({cap}) must be >= transfer.batch_size "
+                f"({config.transfer.batch_size}) so each repo gets at least 1 thread"
+            )
+    if config.transfer.adaptive_threads and not cap:
+        raise RuntimeError(
+            "transfer.adaptive_threads requires transfer.max_total_threads to be set"
+        )
+
     for label, server_id in [
         ("source", config.jfrog.source_server_id),
         ("target", config.jfrog.target_server_id),
@@ -443,7 +457,18 @@ def cmd_validate(config) -> int:
         except RuntimeError as e:
             print(f"  ✗ {label.title()} server validation failed")
             raise RuntimeError(f"{label.title()} server validation failed: {e}")
-    
+
+    tc = config.transfer
+    eff = effective_threads(tc.threads, tc.batch_size, cap)
+    total = eff * tc.batch_size
+    print(f"\nThread configuration:")
+    print(f"  threads:           {tc.threads}")
+    print(f"  batch_size:        {tc.batch_size}")
+    print(f"  max_total_threads: {cap or 'unlimited'}")
+    print(f"  adaptive_threads:  {tc.adaptive_threads}")
+    print(f"  effective per-repo: {eff} threads")
+    print(f"  max total load:    {total} threads")
+
     print("\n✓ Configuration validation successful!")
     return 0
 

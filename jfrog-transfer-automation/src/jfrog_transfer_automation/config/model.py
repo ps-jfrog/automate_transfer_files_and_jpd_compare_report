@@ -35,6 +35,8 @@ class TransferConfig:
     filestore: bool = True
     ignore_state: bool = False
     batch_size: int = 4
+    max_total_threads: Optional[int] = None
+    adaptive_threads: bool = False
     stuck_timeout_seconds: int = 600
     poll_interval_seconds: int = 60
     jfrog_cli_home_strategy: str = "default"

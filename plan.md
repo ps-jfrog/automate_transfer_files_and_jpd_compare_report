@@ -505,6 +505,106 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Update `TROUBLESHOOTING.md` with stale CLI home guidance
       - [x] Add checklist items
 
+21. **Thread management — `max_total_threads` cap + adaptive redistribution**:
+    - **Problem**: transfers often get stuck with low thread counts (e.g. 8).
+      Setting a higher value like 256 improves throughput, but in `per_repo`
+      mode with `batch_size: 4` that means 4 × 256 = 1024 concurrent threads,
+      which can overwhelm the source Artifactory.  There is no guard-rail to
+      cap the total threads across a batch, and no mechanism to redistribute
+      freed threads when repos finish within a batch.
+    - **Solution** (combined Approach 1 + 2):
+      - **`max_total_threads`** (default: `null`): safety cap on the total
+        threads across all concurrent transfers in a batch.  When set, the
+        effective per-repo threads = `min(threads, max_total_threads // batch_size)`.
+        Applied at `_prepare_transfer` time.
+      - **`adaptive_threads`** (default: `false`): when enabled, the monitoring
+        loop in `_run_per_repo_mode` recalculates per-repo threads as repos
+        finish: `new_threads = min(threads, max_total_threads // active_count)`.
+        Uses `_adjust_threads()` to update the remaining active CLI homes.
+    - **Implementation**:
+      - `config/model.py` — add `max_total_threads: Optional[int]` and
+        `adaptive_threads: bool` to `TransferConfig`.
+      - `runner.py` — new `_effective_threads()` helper; update
+        `_prepare_transfer()` and the monitoring loop in
+        `_run_per_repo_mode()`.
+      - `cli/main.py` — add validation in `cmd_validate`.
+      - `config.sample.yaml` — new defaults: `threads: 256`,
+        `max_total_threads: 1024`, `adaptive_threads: false`.
+      - `QUICKSTART.md` — document with examples and load table.
+    - **Deliverables**:
+      - [x] Config model fields + config.sample.yaml defaults
+      - [x] `_effective_threads()` helper and `_prepare_transfer()` update
+      - [x] Adaptive redistribution in `_run_per_repo_mode()` monitoring loop
+      - [x] Validation in `cmd_validate`
+      - [x] Documentation in `QUICKSTART.md` with examples
+      - [x] Add checklist items
+
+22. **DRY fix — extract `effective_threads()` as standalone function**:
+    - **Problem**: The effective-threads formula
+      `min(threads, max_total_threads // active_count)` was duplicated: once
+      in `TransferRunner._effective_threads()` and again inline in
+      `cmd_validate()`.  If the formula changes, the two copies can diverge.
+    - **Solution**: Extract a pure standalone `effective_threads()` function
+      in `transfer/runner.py` (module-level).  Have
+      `TransferRunner._effective_threads()` delegate to it, and replace the
+      inline calculation in `cmd_validate()` with a call to the same function.
+    - **Deliverables**:
+      - [x] Standalone `effective_threads()` function in `runner.py`
+      - [x] `TransferRunner._effective_threads()` delegates to it
+      - [x] `cmd_validate()` calls it instead of duplicating the formula
+
+23. **Auto re-bootstrap per-repo CLI home on transfer auth failure (401)**:
+    - **Problem**: In `per_repo_isolated` mode, prechecks run only against the
+      first repo's CLI home.  If other repos' isolated CLI homes have
+      stale/expired tokens (e.g. from a forced kill or token rotation), their
+      transfers fail with `401 — Props Authentication Token not found` even
+      though the data-transfer plugin is installed.  The automation does not
+      retry because it only auto re-bootstraps during prechecks, not during
+      actual transfers.
+    - **Solution**: In the monitoring loop of `_run_per_repo_mode()`, when a
+      repo transfer fails (exit code != 0), read the per-repo log file and
+      check for auth-related errors (`401`, `Authentication Token`).  If an
+      auth error is detected and the CLI home is isolated:
+      1. Delete the stale CLI home (`shutil.rmtree`).
+      2. Re-bootstrap with fresh server configs.
+      3. Retry the transfer **once** (use `restart_counts` to avoid loops).
+      If the retry also fails, mark the repo as failed normally.
+    - **Deliverables**:
+      - [x] `_is_auth_failure(log_file)` helper in `runner.py`
+      - [x] Re-bootstrap + retry logic in monitoring loop failure branch
+      - [x] Update `TROUBLESHOOTING.md` with per-repo auth retry note
+      - [x] Verify lints and imports
+
+24. **Config-copy bootstrap — copy validated config to all CLI homes after
+    first precheck**:
+    - **Problem**: each isolated CLI home runs `jf c export` → `jf c import`
+      independently, which can produce incomplete config entries (missing
+      access tokens).  The server configs (`source_server_id`,
+      `target_server_id`) are identical across all CLI homes, so running
+      separate export/import per home is redundant and error-prone.
+    - **Solution**: after the first CLI home is bootstrapped and passes
+      prechecks, **copy** its `jfrog-cli.conf.v6` config file to every other
+      repo's CLI home directory.  This guarantees all homes have the exact
+      same validated config.  `_bootstrap_cli_home()` still runs for the
+      *first* home (the authoritative source); subsequent homes receive a
+      file copy.
+    - **Implementation**:
+      - New `_sync_cli_config_to_all_homes()` method that copies the config
+        file from the first CLI home to all others.
+      - `_get_cli_home_dir()` simplified — only creates the directory, no
+        longer calls `_bootstrap_cli_home()` on every invocation.
+      - `_run_per_repo_mode()` calls `_sync_cli_config_to_all_homes()` once
+        after prechecks pass.
+      - Auth-failure retry (Task 23) re-copies from the first home instead
+        of full re-bootstrap.
+    - **Deliverables**:
+      - [x] `_sync_cli_config_to_all_homes()` method in `runner.py`
+      - [x] `_get_cli_home_dir()` simplified (mkdir only, no bootstrap)
+      - [x] `_run_per_repo_mode()` calls sync after prechecks
+      - [x] Auth-retry uses config copy instead of full re-bootstrap
+      - [x] Update documentation (TROUBLESHOOTING.md, config.sample.yaml)
+      - [x] Verify lints and imports
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -672,3 +772,7 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Install scripts (install.ps1, install.sh)
 - [x] Pre-flight `--prechecks` connectivity check before transfers (per_repo_isolated + default)
 - [x] Robust isolated CLI home bootstrap — auto re-bootstrap on precheck failure + stronger config check
+- [x] Thread management — `max_total_threads` cap + adaptive redistribution
+- [x] DRY fix — extract `effective_threads()` as standalone function, reuse in `cmd_validate`
+- [x] Auto re-bootstrap per-repo CLI home on transfer auth failure (401)
+- [x] Config-copy bootstrap — copy validated config to all CLI homes after first precheck

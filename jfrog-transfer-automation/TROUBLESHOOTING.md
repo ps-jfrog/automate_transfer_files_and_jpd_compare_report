@@ -39,10 +39,21 @@ transfer is attempted and `current_run.json` shows `status: "prechecks_failed"`.
   server configs** — the access token was rotated after the initial bootstrap,
   or `jf c export/import` produced an incomplete config entry
 
-**Auto re-bootstrap** (`per_repo_isolated` mode): if the precheck fails from an
-isolated CLI home, the automation **automatically deletes** that CLI home,
-re-imports fresh server configs from the default CLI home (`~/.jfrog`), and
-retries the precheck once.  If the retry also fails, the error is reported.
+**Auto-healing** (`per_repo_isolated` mode): the automation keeps all
+isolated CLI homes in sync automatically:
+
+1. **Config-copy bootstrap** — after the first repo's CLI home is bootstrapped
+   (via `jf c export/import`) and passes the pre-flight check, its validated
+   `jfrog-cli.conf` file is **copied** to every other repo's CLI home.  This
+   guarantees all homes have the same server URLs and access tokens.
+2. **Pre-flight re-bootstrap** — if the pre-flight check fails, the first CLI
+   home is deleted, re-imported from `~/.jfrog`, and the precheck retried.
+   On success the fresh config is copied to all others.
+3. **Transfer auth-retry** — if a per-repo transfer fails with a `401` auth
+   error (`Props Authentication Token not found`), the automation re-copies
+   the validated config from the first CLI home and retries the transfer once.
+
+If the retry also fails in either case, the error is reported.
 
 **Diagnosis steps**:
 
@@ -67,7 +78,8 @@ JFROG_CLI_HOME_DIR=runs/cli_homes/<repo> \
 ```
 
 **Solution**: if the default CLI home's precheck passes (step 2), simply
-re-run `run-once` — the auto re-bootstrap will refresh the isolated homes.
+re-run `run-once` — the config-copy bootstrap will propagate fresh
+credentials from the first validated CLI home to all others automatically.
 If the default CLI home also fails, fix the underlying connectivity or
 permission issue first.
 

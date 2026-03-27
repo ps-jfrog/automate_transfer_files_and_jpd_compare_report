@@ -31,6 +31,24 @@ class TransferResult:
     message: Optional[str] = None
 
 
+def effective_threads(
+    threads: int,
+    batch_size: int,
+    max_total_threads: Optional[int],
+    active_count: int = 0,
+) -> int:
+    """Calculate per-repo thread count honouring a global cap.
+
+    Returns ``min(threads, max_total_threads // concurrent)`` where
+    *concurrent* falls back to *batch_size* when *active_count* is 0.
+    """
+    if not max_total_threads:
+        return threads
+    concurrent = active_count if active_count > 0 else batch_size
+    capped = max(1, max_total_threads // concurrent)
+    return min(threads, capped)
+
+
 class TransferRunner:
     def __init__(self, config: AppConfig, jf_cli: JFrogCLI) -> None:
         self.config = config
@@ -187,20 +205,56 @@ class TransferRunner:
         logger.debug("--prechecks output: %s", output)
         return True, output
 
+    def _cli_homes_base(self) -> Path:
+        """Return the base directory for all per-repo CLI homes."""
+        return Path(self.config.report.output_dir).expanduser().resolve() / "cli_homes"
+
     def _get_cli_home_dir(self, repo: str, run_dir: Path) -> Optional[Path]:
         """Get isolated CLI home directory for a repo if strategy is per_repo_isolated.
-        
-        CLI homes are stored under <output_dir>/cli_homes/<repo>/ (persistent across runs)
-        so that JFrog CLI transfer state is preserved for delta sync, while still giving
-        each repo its own JFROG_CLI_HOME_DIR for concurrency safety.
+
+        Creates the directory if it does not exist.  Server config bootstrapping
+        is handled separately by ``_sync_cli_config_to_all_homes()`` which is
+        called once after the first CLI home passes prechecks.
         """
         if self._is_per_repo_isolated():
-            run_base = Path(self.config.report.output_dir).expanduser().resolve()
-            repo_home = run_base / "cli_homes" / repo
+            repo_home = self._cli_homes_base() / repo
             repo_home.mkdir(parents=True, exist_ok=True)
-            self._bootstrap_cli_home(repo_home)
             return repo_home
         return None
+
+    def _sync_cli_config_to_all_homes(
+        self, source_home: Path, repos: List[str],
+    ) -> None:
+        """Copy the validated JFrog CLI config from *source_home* to every
+        other repo's CLI home directory.
+
+        Since ``source_server_id`` and ``target_server_id`` are the same for
+        all repos, a direct file copy is faster and more reliable than running
+        ``jf c export/import`` per home.  Only the config file is copied —
+        transfer state files (``persistence.json``, ``transfer/``) are
+        repo-specific and left untouched.
+        """
+        config_files = list(source_home.glob("jfrog-cli.conf*"))
+        if not config_files:
+            logger.warning("No jfrog-cli.conf* files found in %s — skipping sync", source_home)
+            return
+
+        base = self._cli_homes_base()
+        synced = 0
+        for repo in repos:
+            dest = base / repo
+            if dest == source_home:
+                continue
+            dest.mkdir(parents=True, exist_ok=True)
+            for cf in config_files:
+                shutil.copy2(cf, dest / cf.name)
+            synced += 1
+            logger.debug("Synced CLI config to %s", dest)
+
+        logger.info(
+            "Synced CLI config from %s to %d other CLI home(s)",
+            source_home.name, synced,
+        )
 
     def _is_server_configured(self, server_id: str, env: dict | None = None) -> bool:
         """Check whether a server ID has a complete config (URL + credentials).
@@ -280,10 +334,10 @@ class TransferRunner:
 
     def _get_all_cli_homes(self) -> List[Path]:
         """Return all per-repo isolated CLI home directories that exist on disk."""
-        cli_homes_base = Path(self.config.report.output_dir).expanduser().resolve() / "cli_homes"
-        if not cli_homes_base.is_dir():
+        base = self._cli_homes_base()
+        if not base.is_dir():
             return []
-        return sorted(d for d in cli_homes_base.iterdir() if d.is_dir())
+        return sorted(d for d in base.iterdir() if d.is_dir())
 
     def update_threads(self, thread_count: int) -> dict:
         """Apply thread count to all relevant CLI homes (default and/or per-repo isolated).
@@ -297,6 +351,26 @@ class TransferRunner:
             self._threads_adjusted.add(home_key)
             return "ok"
         return self._for_all_cli_homes(_update)
+
+    def _effective_threads(self, active_count: int = 0) -> int:
+        """Calculate per-repo thread count honouring ``max_total_threads``.
+
+        Delegates to the module-level :func:`effective_threads` helper so
+        that the same formula can be reused outside this class (e.g. in
+        ``cmd_validate``).
+        """
+        tc = self.config.transfer
+        result = effective_threads(
+            tc.threads, tc.batch_size, tc.max_total_threads, active_count,
+        )
+        if result < tc.threads:
+            cap = tc.max_total_threads
+            concurrent = active_count if active_count > 0 else tc.batch_size
+            logger.info(
+                "Thread cap active: %d per repo (max_total_threads=%d, active_repos=%d)",
+                result, cap, concurrent,
+            )
+        return result
 
     def _check_stuck(self, log_file: Path) -> bool:
         """Check if transfer is stuck by examining log file modification time."""
@@ -312,19 +386,22 @@ class TransferRunner:
         repos: List[str],
         cli_home_dir: Optional[Path] = None,
         dry_run: bool = False,
+        active_count: int = 0,
     ) -> tuple[List[str], dict, Optional[str]]:
         """Shared setup for blocking and background transfers.
 
         Adjusts threads and builds the command args, environment, and cwd.
-        Returns (args, env, cwd).
+        *active_count* is forwarded to ``_effective_threads()`` for cap
+        calculation.  Returns (args, env, cwd).
         """
         logger.debug(f"=== _prepare_transfer ===")
         logger.debug(f"Repos: {repos}, dry_run: {dry_run}, cli_home_dir: {cli_home_dir}")
 
         home_key = str(cli_home_dir) if cli_home_dir else "_default_"
         if home_key not in self._threads_adjusted:
+            effective = self._effective_threads(active_count)
             self._adjust_threads(
-                self.config.transfer.threads, dry_run=dry_run, cli_home_dir=cli_home_dir,
+                effective, dry_run=dry_run, cli_home_dir=cli_home_dir,
             )
             if not dry_run:
                 self._threads_adjusted.add(home_key)
@@ -377,13 +454,14 @@ class TransferRunner:
         repos: List[str],
         cli_home_dir: Optional[Path] = None,
         log_fh=None,
+        active_count: int = 0,
     ) -> subprocess.Popen:
         """Start a transfer as a background process (non-blocking).
 
         Used by per_repo mode to run multiple repos in parallel within a batch.
         Returns the Popen handle for monitoring.
         """
-        args, env, cwd = self._prepare_transfer(repos, cli_home_dir)
+        args, env, cwd = self._prepare_transfer(repos, cli_home_dir, active_count=active_count)
         proc = self.jf_cli.run_background(
             args, env=env, cwd=cwd,
             stdout=log_fh,
@@ -392,7 +470,7 @@ class TransferRunner:
         logger.info(f"Background transfer launched: PID={proc.pid}, repos={repos}")
         return proc
 
-    def start_transfer_per_repo(self, repo: str, run_dir: Path):
+    def start_transfer_per_repo(self, repo: str, run_dir: Path, active_count: int = 0):
         """Start a background transfer for a single repo.
 
         Returns (log_file_path, Popen_handle, log_file_handle).
@@ -405,6 +483,7 @@ class TransferRunner:
         fh = open(log_file, "a")
         proc = self.start_transfer_background(
             [repo], cli_home_dir=cli_home_dir, log_fh=fh,
+            active_count=active_count,
         )
         return log_file, proc, fh
 
@@ -520,6 +599,21 @@ class TransferRunner:
         if fh and not fh.closed:
             fh.close()
 
+    @staticmethod
+    def _is_auth_failure(log_file: Path) -> bool:
+        """Check whether a per-repo log contains an authentication error.
+
+        Looks for patterns like ``401`` combined with ``Authentication Token``
+        which indicate the isolated CLI home has a stale or expired token.
+        """
+        if not log_file.exists():
+            return False
+        try:
+            content = log_file.read_text(errors="replace").lower()
+            return "401" in content and "authentication token" in content
+        except OSError:
+            return False
+
     def _run_per_repo_mode(
         self,
         repos: List[str],
@@ -554,8 +648,10 @@ class TransferRunner:
 
         started_at = time.time()
 
-        # Run prechecks once using the first repo's CLI home
+        # Bootstrap + precheck the first repo's CLI home
         first_cli_home = self._get_cli_home_dir(repos[0], run_dir)
+        if first_cli_home is not None:
+            self._bootstrap_cli_home(first_cli_home)
         ok, precheck_output = self._run_prechecks(repos[:1], cli_home_dir=first_cli_home)
         if not ok and first_cli_home is not None:
             logger.warning(
@@ -565,6 +661,7 @@ class TransferRunner:
             )
             shutil.rmtree(first_cli_home, ignore_errors=True)
             first_cli_home = self._get_cli_home_dir(repos[0], run_dir)
+            self._bootstrap_cli_home(first_cli_home)
             ok, precheck_output = self._run_prechecks(repos[:1], cli_home_dir=first_cli_home)
         if not ok:
             return TransferResult(
@@ -575,6 +672,10 @@ class TransferRunner:
                 run_dir=run_dir,
                 message=f"Pre-flight connectivity check failed. Output:\n{precheck_output}",
             )
+
+        # Copy validated config from first CLI home to all other homes
+        if first_cli_home is not None:
+            self._sync_cli_config_to_all_homes(first_cli_home, repos)
 
         completed_repos: List[str] = []
         failed_repos: List[str] = []
@@ -587,7 +688,15 @@ class TransferRunner:
         batch_size = self.config.transfer.batch_size
         batches = [repos[i:i + batch_size] for i in range(0, len(repos), batch_size)]
 
-        logger.info(f"Running {len(repos)} repos in {len(batches)} batches (batch_size={batch_size})")
+        effective = self._effective_threads(batch_size)
+        cap = self.config.transfer.max_total_threads
+        logger.info(
+            "Running %d repos in %d batches (batch_size=%d, "
+            "threads=%d/repo, max_total=%s, adaptive=%s)",
+            len(repos), len(batches), batch_size,
+            effective, cap or "unlimited",
+            self.config.transfer.adaptive_threads,
+        )
         logger.debug(f"Batch breakdown: {[len(b) for b in batches]}")
 
         stopped = False
@@ -603,7 +712,9 @@ class TransferRunner:
             # Launch all repos in this batch in parallel (non-blocking)
             for repo in batch:
                 try:
-                    log_file, proc, fh = self.start_transfer_per_repo(repo, run_dir)
+                    log_file, proc, fh = self.start_transfer_per_repo(
+                        repo, run_dir, active_count=len(batch),
+                    )
                     log_files[repo] = log_file
                     processes[repo] = proc
                     log_handles[repo] = fh
@@ -652,12 +763,44 @@ class TransferRunner:
                             completed_repos.append(repo)
                             logger.info(f"Transfer completed for {repo} (exit code 0)")
                         else:
-                            logger.error(
-                                f"Transfer failed for {repo} (exit code {rc}). "
-                                "Check the per-repo log at runs/<timestamp>/logs/%s.log for details.",
-                                repo,
-                            )
-                            failed_repos.append(repo)
+                            log_file = log_files.get(repo)
+                            cli_home = self._get_cli_home_dir(repo, run_dir)
+                            if (
+                                log_file
+                                and cli_home
+                                and self._is_auth_failure(log_file)
+                                and restart_counts[repo] < max_restarts
+                            ):
+                                restart_counts[repo] += 1
+                                logger.warning(
+                                    "Transfer for %s failed with auth error (401) — "
+                                    "re-syncing CLI config and retrying "
+                                    "(attempt %d/%d)",
+                                    repo, restart_counts[repo], max_restarts,
+                                )
+                                self._sync_cli_config_to_all_homes(
+                                    first_cli_home, [repo],
+                                )
+                                self._threads_adjusted.discard(str(cli_home))
+                                try:
+                                    lf, p, fhandle = self.start_transfer_per_repo(
+                                        repo, run_dir,
+                                        active_count=len(active_repos),
+                                    )
+                                    log_files[repo] = lf
+                                    processes[repo] = p
+                                    log_handles[repo] = fhandle
+                                    still_running.append(repo)
+                                except Exception as e:
+                                    logger.error(f"Auth-retry restart failed for {repo}: {e}")
+                                    failed_repos.append(repo)
+                            else:
+                                logger.error(
+                                    f"Transfer failed for {repo} (exit code {rc}). "
+                                    "Check the per-repo log at runs/<timestamp>/logs/%s.log for details.",
+                                    repo,
+                                )
+                                failed_repos.append(repo)
                         continue
 
                     # Process still running — check if stuck
@@ -671,7 +814,10 @@ class TransferRunner:
                             )
                             self._cleanup_repo_process(repo, processes, log_handles)
                             try:
-                                log_file, proc, fh = self.start_transfer_per_repo(repo, run_dir)
+                                log_file, proc, fh = self.start_transfer_per_repo(
+                                    repo, run_dir,
+                                    active_count=len(active_repos),
+                                )
                                 log_files[repo] = log_file
                                 processes[repo] = proc
                                 log_handles[repo] = fh
@@ -686,6 +832,25 @@ class TransferRunner:
                         continue
 
                     still_running.append(repo)
+
+                # Adaptive redistribution: boost threads for remaining repos
+                if (
+                    still_running
+                    and len(still_running) < len(active_repos)
+                    and self.config.transfer.adaptive_threads
+                    and self.config.transfer.max_total_threads
+                ):
+                    new_threads = self._effective_threads(len(still_running))
+                    logger.info(
+                        "Adaptive threads: %d repos finished, boosting remaining %d "
+                        "repos to %d threads each",
+                        len(active_repos) - len(still_running),
+                        len(still_running),
+                        new_threads,
+                    )
+                    for repo in still_running:
+                        cli_home = self._get_cli_home_dir(repo, run_dir)
+                        self._adjust_threads(new_threads, cli_home_dir=cli_home)
 
                 active_repos = still_running
                 if active_repos:

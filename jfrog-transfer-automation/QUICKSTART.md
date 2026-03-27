@@ -106,14 +106,16 @@ Common causes of precheck failures:
 | Network connectivity blocked between source and target | Check firewall rules, proxy settings |
 | Access token lacks required permissions | Use an admin-scoped token |
 | Server IDs misconfigured | Run `jf c show <server-id>` to verify |
-| Stale/incomplete config in isolated CLI home (`per_repo_isolated`) | Auto re-bootstrap handles this — see below |
+| Stale/incomplete config in isolated CLI home (`per_repo_isolated`) | Config-copy bootstrap handles this — see below |
 
-**`per_repo_isolated` auto re-bootstrap:** when using isolated CLI homes, if the
-precheck fails the automation automatically deletes the stale CLI home,
-re-imports fresh server configs from your default CLI home (`~/.jfrog`), and
-retries the precheck.  This handles cases where the access token was rotated
-or the initial `jf c export/import` produced an incomplete config.  You can
-also manually clear all isolated homes with `rm -rf runs/cli_homes/`.
+**`per_repo_isolated` config-copy bootstrap:** when using isolated CLI homes,
+the automation bootstraps the **first** repo's CLI home via
+`jf c export/import`, validates it with `--prechecks`, and then **copies**
+the validated `jfrog-cli.conf` file to every other repo's CLI home.  This
+guarantees all repos have identical, known-good credentials.  If a transfer
+later fails with a `401` auth error, the config is re-copied and the transfer
+retried once.  You can also manually clear all isolated homes with
+`rm -rf runs/cli_homes/`.
 
 > **Tip:** You can test the precheck manually with:
 > ```bash
@@ -216,21 +218,109 @@ the override is preserved for the remainder of that run. New batches will
 only applied once per CLI home (the first time it is used in a run). If a
 stuck transfer is restarted, the override is also preserved.
 
+#### Controlling Total Thread Load (`max_total_threads`)
+
+In `per_repo` mode the automation launches up to `batch_size` transfer
+processes **in parallel**. Without any cap, the total thread load hitting your
+source Artifactory equals **`batch_size` × `threads`**. To prevent this from
+overwhelming the source instance, set `max_total_threads` in `config.yaml`:
+
+```yaml
+transfer:
+  threads: 256           # desired per-repo threads
+  batch_size: 4          # repos transferred in parallel
+  max_total_threads: 1024  # safety cap on total concurrent threads
+```
+
+The automation calculates the effective per-repo threads as:
+
+```
+effective_threads = min(threads, max_total_threads ÷ active_repos_in_batch)
+```
+
+| `threads` | `batch_size` | `max_total_threads` | Effective per-repo | Total load |
+|-----------|-------------|---------------------|--------------------|------------|
+| 256       | 4           | 1024                | 256                | 1024       |
+| 512       | 4           | 1024                | 256 (capped)       | 1024       |
+| 256       | 8           | 1024                | 128 (capped)       | 1024       |
+| 256       | 4           | *null*              | 256 (no cap)       | 1024       |
+| 8         | 4           | 1024                | 8 (below cap)      | 32         |
+
+Set `max_total_threads: null` (or omit it) to disable the cap entirely.
+
+> **Tip — choosing `threads` vs `max_total_threads`:**
+>
+> - **Without adaptive redistribution** (default): set `threads` to your
+>   desired per-repo count (e.g. 256) and `max_total_threads` as the global safety
+>   cap (e.g. 1024). Each repo gets exactly 256 threads.
+> - **With `adaptive_threads: true`**: set `threads` equal to
+>   `max_total_threads` (e.g. both 1024). This allows the automation to
+>   boost remaining repos as others finish, keeping the total load close to
+>   the global safety cap (e.g. 1024) at all times.
+>
+> Monitor CPU, memory, and network on the source instance and adjust as needed.
+
+#### Adaptive Thread Redistribution (`adaptive_threads`)
+
+When a batch starts with 4 repos but 2 finish early, the remaining 2 repos
+are still running at their original thread count — wasting half the available
+capacity. Enable `adaptive_threads` to automatically boost the remaining
+repos so the total load stays close to `max_total_threads`.
+
+> **Key concept:** `transfer.threads` is the **per-repo ceiling** — no single
+> repo will ever exceed this value. `max_total_threads` is the **global
+> ceiling** across all concurrent repos. Adaptive redistribution can boost a
+> repo up to `min(threads, max_total_threads ÷ active_repos)`. For the
+> boost to have any effect, `threads` must be **greater than**
+> `max_total_threads ÷ batch_size`.
+
+```yaml
+transfer:
+  threads: 1024          # per-repo ceiling (high enough to allow boosting)
+  batch_size: 4
+  max_total_threads: 1024  # global ceiling
+  adaptive_threads: true   # redistribute freed threads to active repos
+```
+
+**How it works:**
+
+1. A batch of 4 repos starts. Each gets `min(1024, 1024 ÷ 4) = 256` threads
+   (total: 1024).
+2. Two repos finish quickly.
+3. The automation recalculates: `min(1024, 1024 ÷ 2) = 512`.
+4. The remaining 2 repos are boosted to **512 threads each**, keeping the
+   total at 1024.
+5. When only 1 repo remains: `min(1024, 1024 ÷ 1) = 1024` — it gets the
+   full capacity.
+
+| Active repos | Calculation | Per-repo threads | Total | What happened |
+|-------------|-------------|-----------------|-------|---------------|
+| 4 (start)   | min(1024, 1024÷4) | 256        | 1024  | Batch launched |
+| 2 (after 2 finish) | min(1024, 1024÷2) | 512  | 1024  | Threads redistributed |
+| 1 (after 3 finish) | min(1024, 1024÷1) | 1024 | 1024  | Full capacity to last repo |
+
+> **Why not `threads: 256`?** With `threads: 256` and `max_total_threads: 1024`,
+> `min(256, 1024 ÷ 2) = 256` — the per-repo ceiling prevents any boost.
+> Adaptive redistribution has no effect when `threads ≤ max_total_threads ÷ batch_size`.
+> Set `threads` equal to (or higher than) `max_total_threads` to get the full benefit.
+
+> **Note:** `adaptive_threads` requires `max_total_threads` to be set.
+> The redistribution takes effect on the next transfer chunk; in-flight
+> chunks continue at the previous rate.
+
 > **Per-repo parallel mode — load multiplier warning**
 >
 > When running with `transfer.mode: "per_repo"` and
 > `transfer.jfrog_cli_home_strategy: "per_repo_isolated"`, the automation
 > launches up to `batch_size` `transfer-files` processes **in parallel**.
-> Each process uses `transfer.threads` threads independently, so the
-> effective load on your source Artifactory is roughly
-> **`batch_size` × `threads`** concurrent requests.
+> Each process uses its effective thread count independently, so the
+> combined load on your source Artifactory can reach
+> **`max_total_threads`** (or `batch_size` × `threads` if no cap is set).
 >
-> For example, `batch_size: 4` with `threads: 16` produces up to **64**
-> concurrent transfer threads hitting the source instance simultaneously.
-> Monitoring CPU, memory, and network on the source becomes **critical** in
+> Monitoring CPU, memory, and network on the source is **critical** in
 > this mode to avoid degrading the performance of your production Artifactory.
-> Start with a conservative thread count and increase only after confirming
-> the source instance can handle the combined load.
+> Start with a conservative `max_total_threads` value and increase only after
+> confirming the source instance can handle the combined load.
 
 ### Building the Repository List
 

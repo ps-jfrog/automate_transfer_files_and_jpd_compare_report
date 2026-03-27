@@ -240,9 +240,9 @@ class TestMultiTerminalWorkflow:
             print("  ✓ monitor terminated (transfer still running)")
 
             # ── Terminal 3: adjust threads mid-transfer ──
-            print("\n=== Terminal 3: update-threads --threads 6 ===")
+            print("\n=== Terminal 3: update-threads --threads 22 ===")
             threads_result = subprocess.run(
-                _automation_cmd(config_path, "update-threads", "--threads", "6"),
+                _automation_cmd(config_path, "update-threads", "--threads", "22"),
                 capture_output=True,
                 text=True,
                 timeout=CMD_TIMEOUT,
@@ -302,8 +302,24 @@ class TestMultiTerminalWorkflow:
             stderr=subprocess.STDOUT,
             text=True,
         )
+
+        # ── Monitor progress during resume (watch for adaptive_threads) ──
+        print("\n=== Monitoring resume progress (watching for adaptive_threads) ===")
+        monitor_iteration = 0
+        while resume.poll() is None:
+            monitor_iteration += 1
+            time.sleep(15)
+            mon = subprocess.run(
+                _automation_cmd(config_path, "status"),
+                capture_output=True,
+                text=True,
+                timeout=CMD_TIMEOUT,
+            )
+            print(f"\n--- Monitor iteration {monitor_iteration} ---")
+            print(mon.stdout.strip())
+
         resume_out, _ = resume.communicate(timeout=TRANSFER_TIMEOUT)
-        print("resume output (last 2000 chars):")
+        print("\nresume output (last 2000 chars):")
         print(resume_out[-2000:])
         assert resume.returncode == 0, (
             f"resume failed (exit code {resume.returncode})"
