@@ -14,6 +14,10 @@ Mirrors the "Typical multi-terminal workflow" from QUICKSTART.md:
    Then verify ``run-once`` exits cleanly (report skipped), and ``resume``
    to complete the remaining transfer.
 
+3. **Continuous scheduler** — verify that ``scheduler`` with
+   ``pause_between_runs_minutes`` runs at least 2 transfer cycles and pauses
+   between them.
+
 Prerequisites
 -------------
 - JFrog CLI configured with source and target server IDs (e.g. ``app1``, ``app2``)
@@ -25,7 +29,7 @@ Prerequisites
 
 Run
 ---
-::
+All tests::
 
     cd jfrog-transfer-automation/
 
@@ -39,6 +43,18 @@ Skip the seed step (if data already exists)::
     pytest tests/integration/test_e2e_transfer_workflow.py -v -s \\
         --config /path/to/test_schedule/config.yaml \\
         -k "not seed"
+
+Run only the continuous scheduler test::
+
+    pytest tests/integration/test_e2e_transfer_workflow.py -v -s \\
+        --config /path/to/test_schedule/config.yaml \\
+        -k "continuous"
+
+.. note::
+
+   The continuous scheduler test temporarily overrides
+   ``schedule.pause_between_runs_minutes`` to 1 (minute) so it completes
+   quickly.  Your config does **not** need to have this value pre-set.
 """
 from __future__ import annotations
 
@@ -88,6 +104,23 @@ def _wait_for_running(config_path: Path, timeout: int = 30) -> bool:
             except (json.JSONDecodeError, OSError):
                 pass
         time.sleep(1)
+    return False
+
+
+def _wait_for_status(config_path: Path, target_status: str, timeout: int = 300) -> bool:
+    """Poll current_run.json until status matches *target_status*."""
+    run_base = _get_run_base(config_path)
+    current_run = run_base / "current_run.json"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if current_run.exists():
+            try:
+                data = json.loads(current_run.read_text())
+                if data.get("status") == target_status:
+                    return True
+            except (json.JSONDecodeError, OSError):
+                pass
+        time.sleep(2)
     return False
 
 
@@ -325,3 +358,75 @@ class TestMultiTerminalWorkflow:
             f"resume failed (exit code {resume.returncode})"
         )
         print("  ✓ resume completed successfully")
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Continuous scheduler loop
+#   scheduler with pause_between_runs_minutes — verify at least 2 cycles
+# ---------------------------------------------------------------------------
+
+class TestContinuousScheduler:
+    """Verify the scheduler's continuous loop (run → pause → run → …)."""
+
+    def test_continuous_loop(self, config_path, app_config):
+        """Start scheduler with pause_between_runs_minutes=1, wait for 2 runs."""
+        _clear_lock(config_path)
+
+        pause_minutes = app_config.schedule.pause_between_runs_minutes or 1
+
+        print(f"\n=== Starting continuous scheduler (pause: {pause_minutes} min) ===")
+        scheduler = subprocess.Popen(
+            _automation_cmd(config_path, "scheduler", "--verbose"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        try:
+            # ── Wait for run #1 to reach 'running' ──
+            print("  Waiting for run #1 to start...")
+            assert _wait_for_running(config_path, timeout=60), (
+                "Scheduler run #1 did not start within 60s"
+            )
+            print("  ✓ Run #1 is running")
+
+            # ── Wait for run #1 to complete ──
+            print("  Waiting for run #1 to complete...")
+            assert _wait_for_status(config_path, "completed", timeout=TRANSFER_TIMEOUT), (
+                "Scheduler run #1 did not complete within timeout"
+            )
+            print("  ✓ Run #1 completed")
+
+            # ── Wait through the pause + run #2 starting ──
+            print(f"  Waiting for {pause_minutes}-minute pause + run #2 to start...")
+            assert _wait_for_running(config_path, timeout=(pause_minutes * 60) + 120), (
+                "Scheduler run #2 did not start after pause"
+            )
+            print("  ✓ Run #2 started (continuous loop confirmed)")
+
+            # ── Monitor run #2 briefly ──
+            mon = subprocess.run(
+                _automation_cmd(config_path, "status"),
+                capture_output=True,
+                text=True,
+                timeout=CMD_TIMEOUT,
+            )
+            print("  Run #2 status:", mon.stdout.strip()[:500])
+
+        finally:
+            scheduler.terminate()
+            sched_out, _ = scheduler.communicate(timeout=30)
+            print("\nScheduler output (last 3000 chars):")
+            print(sched_out[-3000:])
+
+        assert "Continuous run #1 starting" in sched_out, (
+            "Expected 'Continuous run #1 starting' in scheduler output"
+        )
+        assert "Continuous run #2 starting" in sched_out, (
+            "Expected 'Continuous run #2 starting' in scheduler output"
+        )
+        pause_msg = f"pausing {pause_minutes} minutes before next run"
+        assert pause_msg in sched_out, (
+            f"Expected '{pause_msg}' in scheduler output"
+        )
+        print("  ✓ Continuous scheduler loop verified (2 cycles completed)")
