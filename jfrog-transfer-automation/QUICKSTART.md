@@ -720,6 +720,19 @@ pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
     -k "TestStopAndResume"
 ```
 
+### Run only the continuous scheduler test
+
+Requires `schedule.pause_between_runs_minutes` in your config (e.g. `1` for
+fast testing).  The test starts the scheduler, waits for 2 transfer cycles
+with a pause between them, then terminates the scheduler and verifies the
+output.
+
+```bash
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config /path/to/test_schedule/config.yaml \
+    -k "continuous"
+```
+
 ### Customise image size and count
 
 ```bash
@@ -738,3 +751,4 @@ The test mirrors the "Typical multi-terminal workflow" documented above.
 |-------|-----------|-------------|
 | 1. Seed | `TestSeedData` | Publishes Docker images to every source repo |
 | 2. Workflow | `TestMultiTerminalWorkflow` | `run-once` → `monitor` → `update-threads` → `stop` → verify clean exit → `resume` |
+| 3. Continuous | `TestContinuousScheduler` | `scheduler` with `pause_between_runs_minutes` — verifies 2 transfer cycles with pause |
