@@ -583,6 +583,9 @@ schedule:
 
 ```bash
 jfrog-transfer-automation scheduler --config config.yaml
+
+# Run in background (detaches from terminal, survives logout)
+jfrog-transfer-automation scheduler --config config.yaml --background
 ```
 
 ### Continuous mode (`pause_between_runs_minutes`)
@@ -600,6 +603,9 @@ schedule:
 
 ```bash
 jfrog-transfer-automation scheduler --config config.yaml
+
+# Run in background (detaches from terminal, survives logout)
+jfrog-transfer-automation scheduler --config config.yaml --background
 ```
 
 The scheduler will:

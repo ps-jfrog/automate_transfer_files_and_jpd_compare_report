@@ -56,7 +56,8 @@ def parse_args() -> argparse.Namespace:
     
     subparsers.add_parser("report", parents=[parent_parser])
     
-    subparsers.add_parser("scheduler", parents=[parent_parser])
+    scheduler_parser = subparsers.add_parser("scheduler", parents=[parent_parser])
+    scheduler_parser.add_argument("--background", action="store_true", help="Run in background")
     
     monitor_parser = subparsers.add_parser("monitor", parents=[parent_parser])
     monitor_parser.add_argument("--interval", type=int, default=10, help="Monitor interval in seconds (default: 10)")
@@ -769,7 +770,10 @@ def _scheduler_daily(config, verbose: bool) -> int:
             continue
 
 
-def cmd_scheduler(config, verbose: bool) -> int:
+def cmd_scheduler(config, verbose: bool, background: bool = False, config_path: str = "") -> int:
+    if background:
+        return _run_in_background(config_path, verbose, dry_run=False, command="scheduler")
+
     run_base = _run_base(config)
     probe = RunLock(run_base / ".lock")
     if not probe.acquire():
@@ -822,7 +826,7 @@ def main() -> int:
     if command == "report":
         return cmd_report(config, args.verbose)
     if command == "scheduler":
-        return cmd_scheduler(config, args.verbose)
+        return cmd_scheduler(config, args.verbose, background=background, config_path=args.config)
     if command == "simulate-missed":
         days_ago = getattr(args, "days_ago", 2)
         return cmd_simulate_missed(config, args.verbose, days_ago=days_ago)

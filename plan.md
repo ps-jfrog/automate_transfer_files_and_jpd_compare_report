@@ -651,6 +651,20 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Document behaviour in `QUICKSTART.md`
       - [x] Verify lints and imports
 
+28. **`--background` flag for `scheduler` command**:
+    - **Problem**: `run-once` and `resume` support `--background` to detach
+      from the terminal, but `scheduler` does not.  Users must resort to
+      `nohup` or `screen` to run the scheduler in the background.
+    - **Solution**: reuse the existing `_run_in_background()` helper
+      (DRY) — add `--background` to the `scheduler` subparser and pass it
+      through `cmd_scheduler` → `_run_in_background(…, command="scheduler")`.
+    - **Deliverables**:
+      - [x] Add `--background` to `scheduler` subparser
+      - [x] Handle `background` in `cmd_scheduler` via `_run_in_background()`
+      - [x] Pass `background` and `config_path` from `main()` dispatch
+      - [x] Document in QUICKSTART.md (daily + continuous sections)
+      - [x] Verify lints and imports
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -825,3 +839,4 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Continuous transfer loop (`pause_between_runs_minutes`) for interval-based scheduling
 - [x] DRY fix — reuse `load_repos()` in `compare_adapter.py` + document `#`-comment support
 - [x] Scheduler: exit immediately if another instance is already running
+- [x] `--background` flag for `scheduler` command (reuses `_run_in_background()`)
