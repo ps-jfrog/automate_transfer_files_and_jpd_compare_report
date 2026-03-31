@@ -733,6 +733,29 @@ pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
     -k "continuous"
 ```
 
+### Seed data + continuous scheduler test (combined)
+
+Runs the seed step first (publishes Docker images to source repos) and then
+the continuous scheduler test — useful when starting from scratch or when you
+want fresh test data before verifying the continuous loop:
+
+```bash
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config ../test_schedule/config.yaml \
+    --docker-generator /Users/sureshv/mycode/github-sv/utils/publish_to_artifactory/docker_publish/docker_image_generator.py \
+    --docker-username app1user \
+    --image-count 2 \
+    --image-size-mb 1 \
+    -k "seed or continuous"
+```
+
+The `-k "seed or continuous"` filter selects two test classes:
+
+| Filter match | Test class | What runs |
+|-------------|-----------|-----------|
+| `seed` | `TestSeedData` | Publishes 2 Docker images (1 MB each) to every source repo |
+| `continuous` | `TestContinuousScheduler` | Starts `scheduler`, verifies 2 transfer cycles with a pause, then terminates |
+
 ### Customise image size and count
 
 ```bash
