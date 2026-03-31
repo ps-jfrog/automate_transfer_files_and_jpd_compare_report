@@ -31,6 +31,7 @@ Most customers use `per_repo` mode with isolated CLI homes. At a minimum, config
 schedule:
   timezone: "America/Los_Angeles"        # Your IANA timezone
   start_time: "01:00"                    # Daily start time (24-hour HH:MM)
+  # pause_between_runs_minutes: 30       # Continuous mode (see note below)
 
 jfrog:
   jfrog_cli_path: "jf"                   # Path to JFrog CLI
@@ -69,6 +70,11 @@ report:
 > enforce a global safety cap, and
 > [`adaptive_threads`](#adaptive-thread-redistribution-adaptive_threads) to
 > automatically redistribute freed capacity when repos finish early.
+
+> **Continuous mode:** To run transfers in a loop instead of on a daily
+> schedule, uncomment `pause_between_runs_minutes` and remove `start_time`.
+> See [`Continuous mode`](#continuous-mode-pause_between_runs_minutes) for
+> details.
 
 All other settings have sensible defaults. See `config.sample.yaml` for the full list with comments.
 
