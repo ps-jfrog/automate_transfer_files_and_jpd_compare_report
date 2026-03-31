@@ -636,6 +636,21 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Document `#`-comment support in `QUICKSTART.md` and `config.sample.yaml`
       - [x] Verify lints and imports
 
+27. **Scheduler: exit immediately if another instance is already running**:
+    - **Problem**: running `scheduler` in two terminals results in both
+      processes looping indefinitely — the second one silently skips every
+      `cmd_run_once()` call because the lock is held, wastes resources, and
+      may confuse operators.
+    - **Solution**: at the start of `cmd_scheduler`, perform a quick lock
+      probe (acquire → release).  If the lock is held, print a clear message
+      (`"Another scheduler or transfer is already running. Exiting."`) and
+      return exit code 1 immediately instead of entering the loop.  Individual
+      `cmd_run_once()` calls within the loop retain their own per-run locking.
+    - **Deliverables**:
+      - [x] Early lock-probe in `cmd_scheduler`
+      - [x] Document behaviour in `QUICKSTART.md`
+      - [x] Verify lints and imports
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -809,3 +824,4 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] Config-copy bootstrap — copy validated config to all CLI homes after first precheck
 - [x] Continuous transfer loop (`pause_between_runs_minutes`) for interval-based scheduling
 - [x] DRY fix — reuse `load_repos()` in `compare_adapter.py` + document `#`-comment support
+- [x] Scheduler: exit immediately if another instance is already running

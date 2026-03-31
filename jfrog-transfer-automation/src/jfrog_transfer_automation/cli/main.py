@@ -770,6 +770,13 @@ def _scheduler_daily(config, verbose: bool) -> int:
 
 
 def cmd_scheduler(config, verbose: bool) -> int:
+    run_base = _run_base(config)
+    probe = RunLock(run_base / ".lock")
+    if not probe.acquire():
+        print("Another scheduler or transfer is already running. Exiting.")
+        return 1
+    probe.release()
+
     pause = config.schedule.pause_between_runs_minutes
     if pause:
         return _scheduler_continuous(config, verbose, pause)

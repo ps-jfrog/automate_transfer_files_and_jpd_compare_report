@@ -614,6 +614,20 @@ The scheduler will:
 > | Ongoing replication until data converges | Continuous: `pause_between_runs_minutes` |
 > | One-time bulk transfer | `run-once` (no scheduler needed) |
 
+### Duplicate scheduler protection
+
+If you accidentally start a second `scheduler` in another terminal while one
+is already running, the second instance detects the held lock and **exits
+immediately** with a clear message:
+
+```
+Another scheduler or transfer is already running. Exiting.
+```
+
+This also applies if a `run-once` transfer is in progress when you start the
+scheduler.  There is no need to manually check — the automation prevents
+overlapping runs automatically.
+
 ### Simulate missed schedule (testing)
 ```bash
 # Simulate last run 2 days ago to test catch_up_if_missed
