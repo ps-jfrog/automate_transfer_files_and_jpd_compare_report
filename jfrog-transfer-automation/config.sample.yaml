@@ -26,7 +26,9 @@ schedule:
   # IANA timezone name for interpreting start_time and end_time (e.g. America/Los_Angeles, UTC).
   timezone: "America/Los_Angeles"
 
-  # Daily window start in 24-hour HH:MM local time (required for scheduler / missed-window logic).
+  # Daily window start in 24-hour HH:MM local time.
+  # Required for: daily-window scheduler, catch_up_if_missed, and simulate-missed.
+  # Not required when using continuous mode (pause_between_runs_minutes).
   start_time: "01:00"
 
   # Optional daily cutoff time in HH:MM.  When set, any running transfer
@@ -41,6 +43,7 @@ schedule:
 
   # If true, on scheduler startup, detect schedule windows missed since the last successful run
   # and attempt catch-up transfers (see also: simulate-missed command for testing).
+  # Requires start_time; has no effect in continuous mode (pause_between_runs_minutes).
   catch_up_if_missed: false
 
   # Continuous mode: when set, the scheduler ignores start_time/end_time and
