@@ -11,6 +11,7 @@ class ScheduleConfig:
     end_time: Optional[str] = None
     run_on_startup: bool = False
     catch_up_if_missed: bool = False
+    pause_between_runs_minutes: Optional[int] = None
 
 
 @dataclass

@@ -72,6 +72,25 @@ report:
 
 All other settings have sensible defaults. See `config.sample.yaml` for the full list with comments.
 
+### Repository List File Format
+
+The `include_repos_file` (and `repos_file_for_comparison`) is a plain text file
+with one repository key per line.  Blank lines are ignored, and lines starting
+with `#` are treated as comments — useful for temporarily excluding repos
+without removing them:
+
+```text
+# Production Docker registries
+docker-prod-local
+docker-staging-local
+
+# Temporarily skip this repo (data migration pending)
+# legacy-maven-local
+
+npm-prod-local
+pypi-releases-local
+```
+
 ### Transfer Mode Selection
 
 Choose the appropriate transfer mode based on your needs:
@@ -544,10 +563,56 @@ interruption.  The transfer was cut short on purpose, so generating a
 partial-progress report is not useful.  Use `resume` after the run exits to
 continue where it left off.
 
-## Scheduler (daily)
+## Scheduler
+
+### Daily window schedule (default)
+
+Runs transfers once per day within a configured time window:
+
+```yaml
+schedule:
+  start_time: "01:00"     # start at 1:00 AM
+  end_time: "05:00"       # stop by 5:00 AM (optional)
+```
+
 ```bash
 jfrog-transfer-automation scheduler --config config.yaml
 ```
+
+### Continuous mode (`pause_between_runs_minutes`)
+
+For ongoing data convergence, use continuous mode to run transfers in a loop
+with a configurable pause between runs.  Each run only transfers the **delta**
+(new/changed files since the last run), so subsequent runs get progressively
+faster as the data converges.
+
+```yaml
+schedule:
+  pause_between_runs_minutes: 30   # run → pause 30 min → run → pause → …
+  # start_time and end_time are not required in continuous mode
+```
+
+```bash
+jfrog-transfer-automation scheduler --config config.yaml
+```
+
+The scheduler will:
+1. Run `transfer-files` for all repos (respecting `batch_size`, `max_total_threads`, etc.)
+2. Generate a comparison report (if `report.enabled: true`)
+3. Pause for 30 minutes
+4. Repeat from step 1
+
+> **Tip:** Combine with `per_repo_isolated` mode and `adaptive_threads: true`
+> for maximum throughput.  The pause gives your source Artifactory breathing
+> room between transfer cycles.
+
+> **When to use continuous mode vs. daily window:**
+>
+> | Scenario | Recommended mode |
+> |----------|-----------------|
+> | Migration with a fixed maintenance window | Daily: `start_time` / `end_time` |
+> | Ongoing replication until data converges | Continuous: `pause_between_runs_minutes` |
+> | One-time bulk transfer | `run-once` (no scheduler needed) |
 
 ### Simulate missed schedule (testing)
 ```bash

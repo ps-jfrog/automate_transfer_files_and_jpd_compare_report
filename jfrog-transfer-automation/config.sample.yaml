@@ -43,6 +43,13 @@ schedule:
   # and attempt catch-up transfers (see also: simulate-missed command for testing).
   catch_up_if_missed: false
 
+  # Continuous mode: when set, the scheduler ignores start_time/end_time and
+  # runs transfers in a loop — run transfer → pause N minutes → repeat.
+  # Each run transfers only the delta (new/changed files since last run).
+  # Set to null (or omit) to use the default daily time-window schedule.
+  # Example: 30 = pause 30 minutes between runs.
+  pause_between_runs_minutes: null
+
 # -----------------------------------------------------------------------------
 # jfrog — how the tool invokes JFrog CLI and identifies source/target instances
 # -----------------------------------------------------------------------------
@@ -156,7 +163,7 @@ report:
   # If true, produce a more detailed comparison in the generated report.
   detailed_comparison: true
 
-  # Optional file listing repo keys used specifically for comparison report scope (same line format as include file).
+  # Optional file listing repo keys for comparison report scope (one per line; lines starting with # are ignored).
   # Relative paths are resolved relative to the directory containing this config file.
   repos_file_for_comparison: all_repos_to_compare.txt
 

@@ -424,9 +424,15 @@ def cmd_validate(config) -> int:
     """Validate configuration and JFrog CLI setup."""
     jf_cli = JFrogCLI(config.jfrog.jfrog_cli_path)
     
-    if not config.schedule.start_time:
-        raise RuntimeError("schedule.start_time is required in config")
-    
+    if not config.schedule.start_time and not config.schedule.pause_between_runs_minutes:
+        raise RuntimeError(
+            "schedule.start_time is required (or set schedule.pause_between_runs_minutes for continuous mode)"
+        )
+
+    pause = config.schedule.pause_between_runs_minutes
+    if pause is not None and pause < 1:
+        raise RuntimeError("schedule.pause_between_runs_minutes must be a positive integer (or null to disable)")
+
     if not config.jfrog.source_server_id:
         raise RuntimeError("jfrog.source_server_id is required in config")
     if not config.jfrog.target_server_id:
@@ -694,11 +700,35 @@ def cmd_report(config, verbose: bool) -> int:
     return 0
 
 
-def cmd_scheduler(config, verbose: bool) -> int:
+def _scheduler_continuous(config, verbose: bool, pause_minutes: int) -> int:
+    """Run transfers in a continuous loop with a fixed pause between runs."""
+    run_base = _run_base(config)
+    logger = setup_logging(run_base, verbose)
+    logger.info(
+        "Starting continuous transfer loop (pause: %d minutes between runs)",
+        pause_minutes,
+    )
+
+    if config.schedule.run_on_startup:
+        logger.info("run_on_startup=true — running first transfer immediately")
+
+    run_count = 0
+    while True:
+        run_count += 1
+        logger.info("=== Continuous run #%d starting ===", run_count)
+        cmd_run_once(config, verbose)
+        logger.info(
+            "=== Continuous run #%d finished — pausing %d minutes before next run ===",
+            run_count, pause_minutes,
+        )
+        time.sleep(pause_minutes * 60)
+
+
+def _scheduler_daily(config, verbose: bool) -> int:
+    """Run transfers on a daily time-window schedule."""
     run_base = _run_base(config)
     logger = setup_logging(run_base, verbose)
 
-    # Handle catch-up if missed runs
     if config.schedule.catch_up_if_missed:
         last_run = _get_last_successful_run_time(run_base)
         if last_run:
@@ -733,13 +763,17 @@ def cmd_scheduler(config, verbose: bool) -> int:
         time.sleep(sleep_for)
 
         logger.info(f"Starting scheduled transfer at {window.start}")
-        # cmd_run_once handles its own locking - if lock is held, it will skip and return 1
         result = cmd_run_once(config, verbose)
         if result != 0:
-            # Lock was held - cmd_run_once already logged the reason
-            # Wait a bit before recalculating to ensure we get the next window, not the same one
             time.sleep(1)
             continue
+
+
+def cmd_scheduler(config, verbose: bool) -> int:
+    pause = config.schedule.pause_between_runs_minutes
+    if pause:
+        return _scheduler_continuous(config, verbose, pause)
+    return _scheduler_daily(config, verbose)
 
 
 # ---------------------------------------------------------------------------

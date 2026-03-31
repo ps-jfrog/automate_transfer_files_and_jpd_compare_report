@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from jfrog_transfer_automation.jfrog.cli import JFrogCLI
+from jfrog_transfer_automation.transfer.repo_list import load_repos
 
 
 @dataclass
@@ -184,11 +185,7 @@ def compare_repositories(
     with open(target_storage_path) as f:
         target_data = json.load(f)
 
-    repo_keys = [
-        line.strip()
-        for line in open(repos_file_path).readlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    repo_keys = load_repos(str(repos_file_path))
 
     repo_details = extract_repo_details(repo_keys, source_data, target_data)
 

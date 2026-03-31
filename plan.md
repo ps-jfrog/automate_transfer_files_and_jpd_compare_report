@@ -605,6 +605,37 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Update documentation (TROUBLESHOOTING.md, config.sample.yaml)
       - [x] Verify lints and imports
 
+25. **Continuous transfer loop with configurable pause
+    (`pause_between_runs_minutes`)**:
+    - **Problem**: the existing `scheduler` command runs transfers on a daily
+      time-based window (`start_time` / `end_time`).  Some customers need a
+      simpler mode: run transfer → pause N minutes → run again → repeat
+      indefinitely until all data converges.
+    - **Solution**: add `schedule.pause_between_runs_minutes` (optional int).
+      When set, `cmd_scheduler` enters a continuous loop that ignores
+      `start_time` / `end_time` and simply runs `cmd_run_once` followed by a
+      configurable sleep.  When `null` (default), the existing daily-window
+      scheduler behaviour is unchanged.
+    - **Deliverables**:
+      - [x] New field `pause_between_runs_minutes` in `ScheduleConfig`
+      - [x] Continuous-loop branch in `cmd_scheduler`
+      - [x] Relax `cmd_validate` — `start_time` not required when continuous mode
+      - [x] Update `config.sample.yaml` with new setting and comments
+      - [x] Update `QUICKSTART.md` with usage example
+      - [x] Verify lints and imports
+
+26. **DRY fix — reuse `load_repos()` in `compare_adapter.py`**:
+    - **Problem**: `compare_adapter.py` reads the repos file inline with its
+      own list comprehension that duplicates the `#`-comment-skip logic
+      already present in `repo_list.load_repos()`.
+    - **Solution**: replace the inline reading with a call to `load_repos()`.
+      Document the `#`-comment feature in `QUICKSTART.md` and
+      `config.sample.yaml` so customers know they can comment out repos.
+    - **Deliverables**:
+      - [x] Replace inline repo reading in `compare_adapter.py` with `load_repos()`
+      - [x] Document `#`-comment support in `QUICKSTART.md` and `config.sample.yaml`
+      - [x] Verify lints and imports
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -776,3 +807,5 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] DRY fix — extract `effective_threads()` as standalone function, reuse in `cmd_validate`
 - [x] Auto re-bootstrap per-repo CLI home on transfer auth failure (401)
 - [x] Config-copy bootstrap — copy validated config to all CLI homes after first precheck
+- [x] Continuous transfer loop (`pause_between_runs_minutes`) for interval-based scheduling
+- [x] DRY fix — reuse `load_repos()` in `compare_adapter.py` + document `#`-comment support
