@@ -4,6 +4,7 @@ schedule:
   end_time: null
   run_on_startup: false
   catch_up_if_missed: true
+  pause_between_runs_minutes: 1
 
 jfrog:
   jfrog_cli_path: "jf"
