@@ -54,5 +54,3 @@ suggestions/
 
 
 runs/
-test_schedule/config_test_continuous_schedule.yaml
-test_schedule/last_3_docker_repos.txt
