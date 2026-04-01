@@ -716,6 +716,20 @@ pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
     --image-size-mb 1
 ```
 
+### Run only the seed step (populate source repos without transferring)
+
+```bash
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config /path/to/test_schedule/config.yaml \
+    --docker-generator /path/to/docker_image_generator.py \
+    --docker-username app1user \
+    -k "seed"
+```
+
+This publishes Docker images to every source repo listed in your
+`transfer.include_repos_file` without running any transfers.  Useful when
+you want to populate test data first and run transfers separately.
+
 ### Skip the seed stage (data already exists)
 
 ```bash
