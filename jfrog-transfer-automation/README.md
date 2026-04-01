@@ -163,19 +163,21 @@ All repos share the system-wide JFrog CLI home (`~/.jfrog`). Delta sync state is
 
 ```
 <output_dir>/                              (e.g. ./runs/)
-├── .lock                                  ← run lock file
-├── current_run.json                       ← current run status
+├── .lock                                  ← run lock (prevents concurrent runs)
+├── current_run.json                       ← current run status and metadata
 ├── last_run_time.json                     ← last successful run timestamp
-├── next_scheduled_run.json                ← next scheduled run time
+├── next_scheduled_run.json                ← next scheduled run time (daily mode)
+├── run.log                                ← scheduler-level log (lifecycle across runs)
+├── background.log                         ← stdout/stderr of --background process
 │
-├── 20260127_214200/                       ← per-run directory (one per run)
-│   ├── run.log                            ← run log
+├── 20260127_214200/                       ← per-run directory (one per transfer cycle)
+│   ├── run.log                            ← detailed transfer orchestration log for this run
 │   ├── reports/
 │   │   ├── comparison-20260127_214200.txt  ← comparison report
 │   │   ├── comparison-summary.json
 │   │   ├── source-storageinfo-*.json
 │   │   └── target-storageinfo-*.json
-│   └── logs/                              ← per-repo transfer logs (per_repo mode only)
+│   └── logs/                              ← raw JFrog CLI output per repo
 │       ├── repo-a.log
 │       └── repo-b.log
 │
@@ -191,25 +193,31 @@ Each repo gets its own persistent CLI home under `<output_dir>/cli_homes/`. Tran
 
 ```
 <output_dir>/                              (e.g. ./runs/)
-├── .lock
-├── current_run.json
-├── last_run_time.json
-├── next_scheduled_run.json
+├── .lock                                  ← run lock (prevents concurrent runs)
+├── current_run.json                       ← current run status and metadata
+├── last_run_time.json                     ← last successful run timestamp
+├── next_scheduled_run.json                ← next scheduled run time (daily mode)
+├── run.log                                ← scheduler-level log (lifecycle across runs)
+├── background.log                         ← stdout/stderr of --background process
 │
 ├── cli_homes/                             ← persistent CLI homes (delta sync state)
 │   ├── repo-a/                            ← JFROG_CLI_HOME_DIR for repo-a
-│   │   └── .jfrog/                        ← JFrog CLI state (transfer history, etc.)
-│   └── repo-b/                            ← JFROG_CLI_HOME_DIR for repo-b
-│       └── .jfrog/
+│   │   ├── jfrog-cli.conf.v6             ← server config (auto-synced from first repo)
+│   │   ├── transfer/                     ← JFrog CLI transfer state
+│   │   │   ├── run-status.json           ← per-repo transfer progress
+│   │   │   └── repositories/             ← per-repo file tracking (delta sync)
+│   │   └── locks/                        ← JFrog CLI internal locks
+│   └── repo-b/
+│       └── (same structure)
 │
-├── 20260127_214200/                       ← per-run directory (one per run)
-│   ├── run.log
+├── 20260127_214200/                       ← per-run directory (one per transfer cycle)
+│   ├── run.log                            ← detailed transfer orchestration log for this run
 │   ├── reports/
 │   │   ├── comparison-20260127_214200.txt
 │   │   ├── comparison-summary.json
 │   │   ├── source-storageinfo-*.json
 │   │   └── target-storageinfo-*.json
-│   └── logs/
+│   └── logs/                              ← raw JFrog CLI output per repo
 │       ├── repo-a.log
 │       └── repo-b.log
 │
@@ -218,3 +226,21 @@ Each repo gets its own persistent CLI home under `<output_dir>/cli_homes/`. Tran
 ```
 
 Delta sync state: `<output_dir>/cli_homes/<repo>/` (per-repo, persistent across runs)
+
+#### Log files reference
+
+| Log file | Location | What it contains | When to use |
+|----------|----------|-----------------|-------------|
+| `background.log` | `<output_dir>/background.log` | All stdout/stderr from a `--background` process (scheduler or run-once). Includes every message that would appear in the terminal if run in foreground. | **First place to check** when a `--background` process exits unexpectedly or doesn't seem to start. Use `tail -f` to follow progress. |
+| `run.log` (base) | `<output_dir>/run.log` | Scheduler-level lifecycle: which run cycle is starting/finishing, pause durations, stop signals. Only created when using `scheduler`. | Check to see how many transfer cycles have completed, whether the scheduler stopped cleanly, or if a stop signal was received. |
+| `run.log` (per-run) | `<output_dir>/<timestamp>/run.log` | Detailed orchestration for a single transfer cycle: repo loading, batch processing, thread settings, prechecks, bootstrap, transfer launch/completion, report generation. Includes DEBUG-level messages when `--verbose` is used. | **Primary troubleshooting log** for a specific transfer run. Shows which repos were processed, thread counts, timing, errors, and retry attempts. |
+| `<repo>.log` | `<output_dir>/<timestamp>/logs/<repo>.log` | Raw JFrog CLI `transfer-files` output for a single repo: connectivity checks, file counts, transfer progress, errors, data-transfer plugin version. | Check when a specific repo's transfer fails or behaves unexpectedly. Shows JFrog Platform trace IDs for cross-referencing with server-side logs. |
+| `current_run.json` | `<output_dir>/current_run.json` | JSON with `status` (`running`, `completed`, `stopped`, `partial`), `run_dir`, `started_at`, `stopped_at`. | Quick check of current/last run state. Used by `status` and `stop` commands. |
+| `last_run_time.json` | `<output_dir>/last_run_time.json` | Timestamp of last successful completion. | Used by `catch_up_if_missed` to detect missed schedule windows. |
+
+**Troubleshooting order** (most common workflow):
+
+1. `tail -f <output_dir>/background.log` — is the process running? Any startup errors?
+2. `cat <output_dir>/run.log` — which run cycle is active? Did the scheduler stop?
+3. `tail -f <output_dir>/<latest-timestamp>/run.log` — what's happening in the current transfer?
+4. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
