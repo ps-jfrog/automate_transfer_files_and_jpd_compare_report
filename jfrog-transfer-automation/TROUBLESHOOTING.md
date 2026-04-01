@@ -194,6 +194,19 @@ permission issue first.
 - Check YAML indentation and syntax
 - Verify required fields: `schedule.start_time`, `jfrog.source_server_id`, `jfrog.target_server_id`
 
+### Background process exits immediately
+
+**Problem**: `--background` starts but PID is no longer running.
+
+**Solution**:
+- Check the background log for errors: `tail -f <output_dir>/background.log`
+  (the exact path is printed when the background process starts)
+- Run in foreground with `--verbose` to see startup errors directly:
+  ```bash
+  jfrog-transfer-automation run-once --config config.yaml --verbose
+  ```
+- Verify `ps -p <PID>` matches the PID printed at startup
+
 ## Windows-Specific Issues
 
 ### Background process doesn't detach

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+
 import subprocess
 import sys
 import time
@@ -202,42 +202,41 @@ def _resolve_clients(config) -> tuple[ArtifactoryClient, ArtifactoryClient]:
 
 
 def _run_in_background(config_path: str, verbose: bool, dry_run: bool, command: str = "run-once") -> int:
-    """Run the transfer in background by spawning a detached process."""
+    """Spawn the command as a detached background process.
+
+    Stdout/stderr are redirected to ``<output_dir>/background.log`` so that
+    startup errors are never silently lost.  The actual child PID and log
+    path are printed to the console.
+    """
     if dry_run:
         print("Would run in background (detached from terminal)")
         return 0
-    
-    # Get the current script/executable path
-    script_args = [sys.executable, "-m", "jfrog_transfer_automation.cli.main", 
-                   "--config", config_path, command]
+
+    config = load_config(config_path)
+    log_dir = Path(config.report.output_dir).expanduser().resolve()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "background.log"
+
+    script_args = [sys.executable, "-m", "jfrog_transfer_automation.cli.main",
+                   command, "--config", config_path]
     if verbose:
         script_args.append("--verbose")
-    
-    # On Windows, use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
-    # On Unix, use os.fork() or subprocess with proper flags
+
+    log_fh = open(log_path, "a")
+
+    kwargs: dict = dict(
+        stdout=log_fh,
+        stderr=log_fh,
+        start_new_session=True,
+    )
     if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        process = subprocess.Popen(
-            script_args,
-            creationflags=creation_flags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         )
-        print(f"Started background process with PID: {process.pid}")
-    else:
-        pid = os.fork()
-        if pid == 0:
-            os.setsid()
-            process = subprocess.Popen(
-                script_args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            os._exit(0)
-        else:
-            print(f"Started background process with PID: {pid}")
-    
+
+    process = subprocess.Popen(script_args, **kwargs)
+    print(f"Started background process with PID: {process.pid}")
+    print(f"Log: {log_path}")
     return 0
 
 
@@ -701,6 +700,43 @@ def cmd_report(config, verbose: bool) -> int:
     return 0
 
 
+def _is_stop_requested(run_base: Path) -> bool:
+    """Return True if ``current_run.json`` status is ``"stopped"``."""
+    current = _read_current_run(run_base)
+    return bool(current and current.get("status") == "stopped")
+
+
+def _interruptible_sleep(seconds: float, run_base: Path, poll_interval: float = 5.0) -> bool:
+    """Sleep for *seconds*, waking every *poll_interval* to check for stop.
+
+    Returns ``True`` if a stop was requested during the sleep (caller
+    should break out of the scheduler loop).
+    """
+    remaining = seconds
+    while remaining > 0:
+        chunk = min(remaining, poll_interval)
+        time.sleep(chunk)
+        remaining -= chunk
+        if _is_stop_requested(run_base):
+            return True
+    return False
+
+
+def _run_and_restore_logger(config, verbose: bool, run_base: Path):
+    """Run a transfer and restore the scheduler-level logger.
+
+    ``cmd_run_once`` calls ``setup_logging`` with a per-run timestamped
+    directory, which clears the shared logger's handlers.  This wrapper
+    restores the base-level handler so the scheduler can keep logging to
+    ``<output_dir>/run.log``.
+
+    Returns ``(result, logger)`` — the exit code and the restored logger.
+    """
+    result = cmd_run_once(config, verbose)
+    logger = setup_logging(run_base, verbose)
+    return result, logger
+
+
 def _scheduler_continuous(config, verbose: bool, pause_minutes: int) -> int:
     """Run transfers in a continuous loop with a fixed pause between runs."""
     run_base = _run_base(config)
@@ -717,12 +753,20 @@ def _scheduler_continuous(config, verbose: bool, pause_minutes: int) -> int:
     while True:
         run_count += 1
         logger.info("=== Continuous run #%d starting ===", run_count)
-        cmd_run_once(config, verbose)
+        _, logger = _run_and_restore_logger(config, verbose, run_base)
+
+        if _is_stop_requested(run_base):
+            logger.info("Stop requested — exiting continuous scheduler loop")
+            return 0
+
         logger.info(
             "=== Continuous run #%d finished — pausing %d minutes before next run ===",
             run_count, pause_minutes,
         )
-        time.sleep(pause_minutes * 60)
+        if _interruptible_sleep(pause_minutes * 60, run_base):
+            logger = setup_logging(run_base, verbose)
+            logger.info("Stop requested during pause — exiting continuous scheduler loop")
+            return 0
 
 
 def _scheduler_daily(config, verbose: bool) -> int:
@@ -746,10 +790,16 @@ def _scheduler_daily(config, verbose: bool) -> int:
                 for window in missed:
                     logger.info(f"  - {window.start}")
                 logger.info("Running a single catch-up transfer to cover all missed windows...")
-                cmd_run_once(config, verbose)
+                _, logger = _run_and_restore_logger(config, verbose, run_base)
+                if _is_stop_requested(run_base):
+                    logger.info("Stop requested — exiting daily scheduler")
+                    return 0
 
     if config.schedule.run_on_startup:
-        cmd_run_once(config, verbose)
+        _, logger = _run_and_restore_logger(config, verbose, run_base)
+        if _is_stop_requested(run_base):
+            logger.info("Stop requested — exiting daily scheduler")
+            return 0
 
     while True:
         window = next_window(
@@ -761,10 +811,17 @@ def _scheduler_daily(config, verbose: bool) -> int:
         sleep_for = sleep_seconds_until(window.start)
         logger.info(f"Next scheduled run at {window.start} (in {sleep_for} seconds)")
         _write_next_scheduled_run(run_base, window)
-        time.sleep(sleep_for)
+
+        if _interruptible_sleep(sleep_for, run_base):
+            logger = setup_logging(run_base, verbose)
+            logger.info("Stop requested during wait — exiting daily scheduler")
+            return 0
 
         logger.info(f"Starting scheduled transfer at {window.start}")
-        result = cmd_run_once(config, verbose)
+        result, logger = _run_and_restore_logger(config, verbose, run_base)
+        if _is_stop_requested(run_base):
+            logger.info("Stop requested — exiting daily scheduler")
+            return 0
         if result != 0:
             time.sleep(1)
             continue

@@ -665,6 +665,62 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Document in QUICKSTART.md (daily + continuous sections)
       - [x] Verify lints and imports
 
+29. **Fix `_run_in_background()` — correct PID and log to file**:
+    - **Problem 1 — wrong PID**: on Unix the function uses `os.fork()` +
+      `subprocess.Popen` inside the child, then prints the fork PID (which
+      exits immediately via `os._exit(0)`) instead of the actual
+      scheduler/transfer PID.  All output goes to `/dev/null`, so startup
+      crashes are silently swallowed.
+    - **Fix 1**: replace the fork-based approach with a direct
+      `subprocess.Popen(start_new_session=True)` which returns the real
+      child PID.  Redirect stdout/stderr to a log file at
+      `<output_dir>/background.log` instead of `/dev/null`, and print both
+      the PID and log path so users can monitor and troubleshoot.
+      Removed unused `import os`.
+    - **Problem 2 — wrong argument order**: the spawned command put
+      `--config` before the subcommand (`... --config path scheduler`),
+      but the CLI parser defines `--config` on the subcommand via
+      `parent_parser`, so the subcommand never received it.
+    - **Fix 2**: reorder to `... scheduler --config path` so the
+      subcommand parser sees `--config`.
+    - **Problem 3 — scheduler `run.log` stops after run #1**:
+      `_scheduler_continuous` and `_scheduler_daily` call
+      `setup_logging(run_base)` once, but each `cmd_run_once()` internally
+      calls `setup_logging(run_dir)` with a timestamped subdirectory,
+      which clears all logger handlers — destroying the scheduler's
+      base-level handler.  Subsequent scheduler log messages went to the
+      last per-run log instead of the base `runs/run.log`.
+    - **Fix 3**: extract `_run_and_restore_logger()` helper (DRY) that
+      wraps `cmd_run_once` and restores the base-level logger afterward.
+      Used in all 4 call sites across both scheduler functions.
+    - **Deliverables**:
+      - [x] Rewrite `_run_in_background()` — direct Popen, correct PID, log file
+      - [x] Print PID and log file path to console
+      - [x] Fix argument order (`command --config` not `--config command`)
+      - [x] Fix scheduler logger restoration after each run (DRY helper)
+      - [x] Document in QUICKSTART.md and TROUBLESHOOTING.md
+      - [x] Verify lints and imports
+
+30. **`stop` command terminates the scheduler loop (not just the current transfer)**:
+    - **Use-case**: when a scheduler runs in background (`--background`) and
+      the user issues `jfrog-transfer-automation stop`, the current transfer
+      is stopped but the scheduler's `while True` loop continues — it simply
+      sleeps for `pause_between_runs_minutes` (continuous) or until the next
+      window (daily) and starts a new transfer.  The only way to truly stop
+      the scheduler was `kill <PID>`.
+    - **Fix**: both `_scheduler_continuous` and `_scheduler_daily` now check
+      `current_run.json` for `"stopped"` status after each run **and**
+      during the sleep interval.  If `stop` was requested the scheduler
+      logs a message and exits cleanly — no `kill` required.
+    - **DRY**: extracted `_is_stop_requested(run_base)` helper reused in
+      both scheduler functions and in the sleep-poll loop.
+    - **Deliverables**:
+      - [x] `_is_stop_requested()` helper
+      - [x] `_scheduler_continuous` honours stop
+      - [x] `_scheduler_daily` honours stop
+      - [x] Update QUICKSTART.md stop documentation
+      - [x] Verify lints
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -840,3 +896,5 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] DRY fix — reuse `load_repos()` in `compare_adapter.py` + document `#`-comment support
 - [x] Scheduler: exit immediately if another instance is already running
 - [x] `--background` flag for `scheduler` command (reuses `_run_in_background()`)
+- [x] Fix `_run_in_background()` — correct PID, log to file, arg order, scheduler logger restoration (DRY)
+- [x] `stop` command terminates scheduler loop — scheduler checks for stop after each run and during sleep

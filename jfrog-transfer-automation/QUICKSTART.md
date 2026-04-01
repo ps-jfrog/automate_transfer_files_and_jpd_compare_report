@@ -425,7 +425,14 @@ jfrog-transfer-automation run-once --config /Users/sureshv/mycode/ps-jfrog/autom
 ### Run in background
 ```bash
 jfrog-transfer-automation run-once --config config.yaml --background
+# Started background process with PID: 12345
+# Log: /absolute/path/to/output_dir/background.log
 ```
+
+The command prints the **actual PID** and the path to `background.log`
+(inside your configured `output_dir`).  All stdout/stderr from the
+background process is appended to this log, so startup errors are never
+silently lost.  Use `tail -f <log>` to follow progress.
 
 ### Check status
 ```bash
@@ -436,6 +443,11 @@ jfrog-transfer-automation status --config config.yaml
 ```bash
 jfrog-transfer-automation stop --config config.yaml
 ```
+
+This stops the current transfer **and** terminates the scheduler loop
+(both daily and continuous modes).  The scheduler checks for the stop
+signal after each transfer finishes and every 5 seconds during its
+sleep/pause interval, then exits cleanly.  No `kill` required.
 
 ### Resume stopped transfer
 ```bash
@@ -586,6 +598,8 @@ jfrog-transfer-automation scheduler --config config.yaml
 
 # Run in background (detaches from terminal, survives logout)
 jfrog-transfer-automation scheduler --config config.yaml --background
+# Started background process with PID: 12345
+# Log: /absolute/path/to/output_dir/background.log
 ```
 
 ### Continuous mode (`pause_between_runs_minutes`)
@@ -606,6 +620,8 @@ jfrog-transfer-automation scheduler --config config.yaml
 
 # Run in background (detaches from terminal, survives logout)
 jfrog-transfer-automation scheduler --config config.yaml --background
+# Started background process with PID: 12345
+# Log: /absolute/path/to/output_dir/background.log
 ```
 
 The scheduler will:
@@ -625,6 +641,21 @@ The scheduler will:
 > | Migration with a fixed maintenance window | Daily: `start_time` / `end_time` |
 > | Ongoing replication until data converges | Continuous: `pause_between_runs_minutes` |
 > | One-time bulk transfer | `run-once` (no scheduler needed) |
+
+### Stopping the scheduler
+
+To stop a running scheduler (foreground or `--background`):
+
+```bash
+jfrog-transfer-automation stop --config config.yaml
+```
+
+The scheduler checks for the stop signal:
+- After each transfer completes
+- Every 5 seconds during the pause interval (continuous) or sleep-until-window (daily)
+
+Once detected, the scheduler logs "Stop requested" and exits cleanly.
+You do **not** need to `kill` the process.
 
 ### Duplicate scheduler protection
 
@@ -662,6 +693,11 @@ jfrog-transfer-automation run-once --config config.yaml --dry-run --verbose
 ```bash
 # Start in background
 jfrog-transfer-automation run-once --config config.yaml --background
+# Started background process with PID: 12345
+# Log: /absolute/path/to/output_dir/background.log
+
+# Follow the background log
+tail -f /absolute/path/to/output_dir/background.log
 
 # Monitor in another terminal
 jfrog-transfer-automation monitor --config config.yaml
@@ -723,6 +759,8 @@ pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
     --config /path/to/test_schedule/config.yaml \
     --docker-generator /path/to/docker_image_generator.py \
     --docker-username app1user \
+    --image-count 2 \
+    --image-size-mb 1 \
     -k "seed"
 ```
 
@@ -781,6 +819,63 @@ The `-k "seed or continuous"` filter selects two test classes:
 |-------------|-----------|-----------|
 | `seed` | `TestSeedData` | Publishes 2 Docker images (1 MB each) to every source repo |
 | `continuous` | `TestContinuousScheduler` | Starts `scheduler`, verifies 2 transfer cycles with a pause, then terminates |
+
+### Manual background scheduler test
+
+Use this workflow to seed test data, start the continuous scheduler in
+the background, observe its behaviour, and then stop it cleanly — all
+from a single terminal.
+
+**1. Seed test data into source repos:**
+
+```bash
+cd jfrog-transfer-automation/
+
+pytest tests/integration/test_e2e_transfer_workflow.py -v -s \
+    --config /path/to/test_schedule/config.yaml \
+    --docker-generator /path/to/docker_image_generator.py \
+    --docker-username app1user \
+    --image-count 2 \
+    --image-size-mb 1 \
+    -k "seed"
+```
+
+**2. Start the continuous scheduler in the background:**
+
+```bash
+jfrog-transfer-automation scheduler --config /path/to/test_schedule/config.yaml \
+    --background
+# Started background process with PID: 12345
+# Log: /path/to/output_dir/background.log
+```
+
+**3. Monitor progress:**
+
+```bash
+# Check overall status
+jfrog-transfer-automation status --config /path/to/test_schedule/config.yaml
+
+# Check which process is running
+ps aux | grep "jfrog_transfer_automation"
+
+# Follow the background log for detailed output
+tail -f /path/to/output_dir/background.log
+```
+
+**4. Stop the scheduler (terminates the loop and any active transfer):**
+
+```bash
+jfrog-transfer-automation stop --config /path/to/test_schedule/config.yaml
+```
+
+The scheduler detects the stop signal within ~5 seconds and exits
+cleanly.  Verify with `ps aux | grep "jfrog_transfer_automation"`.
+
+**5. If needed, clear a stale lock (e.g. after a crash or `kill`):**
+
+```bash
+jfrog-transfer-automation clear-lock --config /path/to/test_schedule/config.yaml
+```
 
 ### Customise image size and count
 
