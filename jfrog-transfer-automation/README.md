@@ -243,4 +243,8 @@ Delta sync state: `<output_dir>/cli_homes/<repo>/` (per-repo, persistent across 
 1. `tail -f <output_dir>/background.log` — is the process running? Any startup errors?
 2. `cat <output_dir>/run.log` — which run cycle is active? Did the scheduler stop?
 3. `tail -f <output_dir>/<latest-timestamp>/run.log` — what's happening in the current transfer?
-4. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
+4. Get the main log entries from the  `<output_dir>/<latest-timestamp>/run.log`:
+```
+grep "jf rt transfer\|Transfer completed for\|Transfer for\|Environment: JFROG_CLI_LOG_LEVEL" run.log > transfer_main_log_entries.txt
+````
+5. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
