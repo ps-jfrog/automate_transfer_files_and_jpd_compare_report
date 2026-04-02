@@ -342,6 +342,33 @@ transfer:
 > The redistribution takes effect on the next transfer chunk; in-flight
 > chunks continue at the previous rate.
 
+#### Batch processing behaviour
+
+Repos are divided into batches of `batch_size`. **Batches run
+sequentially** — all repos in the current batch must complete (or fail)
+before the next batch starts. There is no "backfilling": when a repo
+finishes early, its slot is **not** filled by a repo from the next batch.
+
+With `adaptive_threads: true`, the freed capacity is instead
+redistributed as extra threads to the repos still running in the current
+batch. This keeps total throughput close to `max_total_threads` even as
+repos finish.
+
+**Example: 12 repos, `batch_size: 8`, `max_total_threads: 80`**
+
+| Phase | Batch | Active repos | Threads/repo | Total threads | What happens |
+|-------|-------|-------------|-------------|--------------|--------------|
+| 1 | Batch 1 | 8 | 10 | 80 | All 8 launched in parallel |
+| 2 | Batch 1 | 6 (2 finished) | 13 | 78 | Threads redistributed to remaining 6 |
+| 3 | Batch 1 | 2 (6 finished) | 40 | 80 | Last 2 repos get full capacity |
+| 4 | Batch 1 | 0 (all done) | — | 0 | Batch 1 complete |
+| 5 | Batch 2 | 4 | 20 | 80 | Repos 9-12 start now |
+
+> **Tip:** If you want all repos to start at the same time, set
+> `batch_size` equal to the total number of repos. This avoids any
+> waiting between batches, but means more concurrent processes on your
+> source Artifactory. Balance batch size against source instance capacity.
+
 > **Per-repo parallel mode — load multiplier warning**
 >
 > When running with `transfer.mode: "per_repo"` and
