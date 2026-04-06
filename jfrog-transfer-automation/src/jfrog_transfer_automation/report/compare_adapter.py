@@ -199,8 +199,8 @@ def compare_repositories(
 
     for repo_detail in repo_details:
         repo_key = repo_detail["repoKey"]
-        source_repo = repo_detail.get("source", {})
-        target_repo = repo_detail.get("target", {})
+        source_repo = repo_detail.get("source") or {}
+        target_repo = repo_detail.get("target") or {}
 
         source_repo_type = source_repo.get("repoType", "N/A")
         source_package_type = source_repo.get("packageType", "N/A")

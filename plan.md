@@ -721,6 +721,26 @@ Deliverables: cleaner, shorter code with no logic duplication; easier to maintai
       - [x] Update QUICKSTART.md stop documentation
       - [x] Verify lints
 
+31. **Fix detailed comparison report crash when repos exist only on one side**:
+    - **Problem**: when `repos_file_for_comparison` lists a repo that exists
+      in source but not in target (or vice versa), `extract_repo_details()`
+      stores `"target": None` (or `"source": None`) in the dict.
+      Later, `compare_repositories()` does
+      `repo_detail.get("source", {})` — but `.get()` only returns the
+      default `{}` when the **key is missing**; when the key exists with
+      value `None`, it returns `None`.  The subsequent
+      `source_repo.get("repoType")` then crashes with
+      `'NoneType' object has no attribute 'get'`, causing the entire
+      detailed comparison to fail and fall back to the basic report.
+    - **Fix**: change `.get("source", {})` / `.get("target", {})` to
+      `repo_detail.get("source") or {}` / `repo_detail.get("target") or {}`
+      so `None` values are coerced to `{}`.  This allows repos that exist
+      on only one side to be compared correctly (showing 0 for the
+      missing side).
+    - **Deliverables**:
+      - [x] Fix `compare_repositories()` in `compare_adapter.py`
+      - [x] Verify lints
+
 ---
 
 ## Phase 4 — Report generation (Windows-friendly)
@@ -898,3 +918,4 @@ Deliverables: reproducible builds and a distributable artifact.
 - [x] `--background` flag for `scheduler` command (reuses `_run_in_background()`)
 - [x] Fix `_run_in_background()` — correct PID, log to file, arg order, scheduler logger restoration (DRY)
 - [x] `stop` command terminates scheduler loop — scheduler checks for stop after each run and during sleep
+- [x] Fix detailed comparison crash when repos exist only on one side (None → {})
