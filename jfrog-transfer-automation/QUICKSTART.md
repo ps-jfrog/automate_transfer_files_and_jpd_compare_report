@@ -41,10 +41,10 @@ jfrog:
 transfer:
   include_repos_file: "all_local_repos_in_prod.txt"  # File with repo keys (one per line)
   mode: "per_repo"                       # Per-repo transfers with isolation
-  threads: 256                             # Transfer worker threads per repo
+  threads: 100                             # Transfer worker threads per repo
   batch_size: 4                          # Repos processed in parallel
-  max_total_threads: 1024                # Global safety cap (see thread tuning note below)
-  adaptive_threads: false                # Redistribute freed threads (see thread tuning note below)
+  max_total_threads: 100                # Global safety cap (see thread tuning note below)
+  adaptive_threads: true                # Redistribute freed threads (see thread tuning note below)
   stuck_timeout_seconds: 600             # Restart if stuck for 10 minutes
   jfrog_cli_home_strategy: "per_repo_isolated"  # Isolated CLI home per repo
   cli_log_level: "INFO"
