@@ -31,7 +31,7 @@ Most customers use `per_repo` mode with isolated CLI homes. At a minimum, config
 schedule:
   timezone: "America/Los_Angeles"        # Your IANA timezone
   start_time: "01:00"                    # Daily start time (24-hour HH:MM)
-  # pause_between_runs_minutes: 30       # Continuous mode (see note below)
+  # pause_between_runs_minutes: 60        # Continuous mode (see note below)
 
 jfrog:
   jfrog_cli_path: "jf"                   # Path to JFrog CLI
@@ -39,13 +39,15 @@ jfrog:
   target_server_id: "target-server"      # jf config server ID for target
 
 transfer:
-  include_repos_file: "all_local_repos_in_prod.txt"  # File with repo keys (one per line)
+  include_repos_file: "all_local_repos_in_prod.txt"  # File with repo keys (one per line) . 
+                                                     #Location relative to the config.yaml
   mode: "per_repo"                       # Per-repo transfers with isolation
   threads: 100                             # Transfer worker threads per repo
   batch_size: 4                          # Repos processed in parallel
   max_total_threads: 100                # Global safety cap (see thread tuning note below)
   adaptive_threads: true                # Redistribute freed threads (see thread tuning note below)
   stuck_timeout_seconds: 600             # Restart if stuck for 10 minutes
+  poll_interval_seconds: 60    # Seconds between polling transfer status while monitoring a run.
   jfrog_cli_home_strategy: "per_repo_isolated"  # Isolated CLI home per repo
   cli_log_level: "INFO"
 
@@ -53,7 +55,8 @@ report:
   enabled: true
   output_dir: "./runs"
   detailed_comparison: true
-  repos_file_for_comparison: "all_local_repos_in_prod.txt"
+  repos_file_for_comparison: "all_local_repos_in_prod.txt" # File with repo keys (one per line) . 
+                                                           #Location relative to the config.yaml
 ```
 
 > **Path resolution:** All relative paths in the config are resolved relative
@@ -635,6 +638,8 @@ For ongoing data convergence, use continuous mode to run transfers in a loop
 with a configurable pause between runs.  Each run only transfers the **delta**
 (new/changed files since the last run), so subsequent runs get progressively
 faster as the data converges.
+
+See example [../test_schedule/config_test_continuous_schedule.yaml](../test_schedule/config_test_continuous_schedule.yaml)
 
 ```yaml
 schedule:
