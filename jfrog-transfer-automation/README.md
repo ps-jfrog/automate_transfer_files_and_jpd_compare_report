@@ -249,8 +249,10 @@ grep "jf rt transfer\|Transfer completed for\|Transfer for\|Environment: JFROG_C
 ````
 5. Check if any repo transfers failed with `exit code` that is not zero
 ```
-grep 'exit code [1-9]+' transfer_main_log_entries.txt
+grep "exit code [0-9]\+" transfer_main_log_entries.txt
 or
-grep 'exit code [1-9]+' run.log
+grep "exit code [0-9]\+" run.log
+or
+grep -E "exit code [0-9]+" run.log
 ```
 6. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
