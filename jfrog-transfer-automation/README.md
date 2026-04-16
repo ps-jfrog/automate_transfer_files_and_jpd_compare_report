@@ -253,4 +253,4 @@ grep 'exit code [1-9]+' transfer_main_log_entries.txt
 or
 grep 'exit code [1-9]+' run.log
 ```
-5. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
+6. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
