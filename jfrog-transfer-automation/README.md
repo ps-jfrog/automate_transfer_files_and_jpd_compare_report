@@ -247,4 +247,10 @@ Delta sync state: `<output_dir>/cli_homes/<repo>/` (per-repo, persistent across 
 ```
 grep "jf rt transfer\|Transfer completed for\|Transfer for\|Environment: JFROG_CLI_LOG_LEVEL" run.log > transfer_main_log_entries.txt
 ````
+5. Check if any repo transfers failed with `exit code` that is not zero
+```
+grep 'exit code [1-9]+' transfer_main_log_entries.txt
+or
+grep 'exit code [1-9]+' run.log
+```
 5. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did a specific repo fail?
