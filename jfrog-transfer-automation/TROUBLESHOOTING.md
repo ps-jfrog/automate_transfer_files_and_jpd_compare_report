@@ -83,6 +83,47 @@ credentials from the first validated CLI home to all others automatically.
 If the default CLI home also fails, fix the underlying connectivity or
 permission issue first.
 
+### Error: "Files transfer is already running"
+
+**Problem**: When using `transfer.mode: "per_repo"` with
+`transfer.jfrog_cli_home_strategy: "default"`, concurrent repo transfers
+share the same CLI home (`~/.jfrog`). The JFrog CLI allows only **one**
+active `transfer-files` session per CLI home, so the second (and subsequent)
+repo in a batch fails immediately with:
+
+```
+[Error] Files transfer is already running
+```
+
+**Root cause**: In `per_repo` mode the automation launches up to `batch_size`
+transfer processes in parallel. When they all share the same CLI home, the
+first process acquires the transfer lock and every other process is rejected.
+
+**Solution**: Always use `per_repo_isolated` when running in `per_repo` mode:
+
+```yaml
+transfer:
+  mode: "per_repo"
+  jfrog_cli_home_strategy: "per_repo_isolated"   # required for per_repo mode
+```
+
+Each repo then gets its own `JFROG_CLI_HOME_DIR` under
+`<output_dir>/cli_homes/<repo>/`, so parallel transfers never contend for
+the same lock.
+
+If you have already hit this error and a stale lock remains, clear it by
+running:
+
+```bash
+jfrog-transfer-automation stop --config config.yaml
+```
+
+or manually:
+
+```bash
+JFROG_CLI_HOME_DIR=~/.jfrog jf rt transfer-files --stop
+```
+
 ### Transfer fails immediately
 
 **Problem**: `jf rt transfer-files` command fails.

@@ -98,9 +98,15 @@ transfer:
   include_repos_file: "repos.txt"
   batch_size: 4                    # Process 4 repos at a time
   stuck_timeout_seconds: 600       # Restart if stuck for 10 minutes
-  jfrog_cli_home_strategy: "per_repo_isolated"  # Optional isolation
+  jfrog_cli_home_strategy: "per_repo_isolated"  # REQUIRED for per_repo mode
   threads: 8
 ```
+
+> **Important:** `per_repo` mode **requires** `jfrog_cli_home_strategy: "per_repo_isolated"`.
+> Using the `default` strategy with `per_repo` mode causes concurrent transfers to
+> share the same CLI home, and all but the first repo in each batch will fail with
+> `[Error] Files transfer is already running`. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+> for details.
 
 **Features:**
 - **Batching**: Processes repositories in parallel batches (configurable via `batch_size`)
@@ -122,7 +128,13 @@ The `jfrog_cli_home_strategy` option controls how JFrog CLI home directories are
 
 Uses the default JFrog CLI home directory (typically `~/.jfrog` or `%USERPROFILE%\.jfrog`).
 
+> **Warning:** Do **not** use `default` with `transfer.mode: "per_repo"`.
+> The JFrog CLI allows only one active transfer session per CLI home, so
+> concurrent repo transfers will fail with `[Error] Files transfer is already running`.
+> Always use `per_repo_isolated` when using `per_repo` mode.
+
 **Use when:**
+- You are using `single_command` mode (all repos in one transfer process)
 - You don't need isolation between repository transfers
 - All repositories can share the same CLI configuration and state
 

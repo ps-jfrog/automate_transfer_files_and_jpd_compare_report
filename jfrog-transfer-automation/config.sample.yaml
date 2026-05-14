@@ -137,7 +137,12 @@ transfer:
 
   # JFrog CLI config home strategy:
   #   default             — shared CLI home (~/.jfrog) for all operations.
-  #   per_repo_isolated   — isolated home per repo (only meaningful with per_repo mode).
+  #                         WARNING: Do NOT use "default" with mode "per_repo".
+  #                         The JFrog CLI allows only one active transfer session per CLI home,
+  #                         so concurrent repos in a batch will fail with:
+  #                           [Error] Files transfer is already running
+  #                         Always use "per_repo_isolated" when mode is "per_repo".
+  #   per_repo_isolated   — isolated home per repo (REQUIRED for per_repo mode).
   #                         Each repo gets its own JFROG_CLI_HOME_DIR at <output_dir>/cli_homes/<repo>/
   #                         which is persistent across runs, preserving transfer state for delta sync.
   #                         The first repo's CLI home is bootstrapped from ~/.jfrog via jf c export/import,
