@@ -35,6 +35,8 @@ class TransferConfig:
     threads: int = 8
     filestore: bool = True
     ignore_state: bool = False
+    created_after: Optional[str] = None
+    downloaded_after: Optional[str] = None
     batch_size: int = 4
     max_total_threads: Optional[int] = None
     adaptive_threads: bool = False

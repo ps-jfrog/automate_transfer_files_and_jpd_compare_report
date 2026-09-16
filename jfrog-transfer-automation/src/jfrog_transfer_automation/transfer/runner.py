@@ -159,6 +159,11 @@ class TransferRunner:
         # Only include --filestore if it's True (presence of flag means enabled)
         if self.config.transfer.filestore:
             args.append("--filestore")
+
+        if self.config.transfer.created_after:
+            args.extend(["--created-after", self.config.transfer.created_after])
+        if self.config.transfer.downloaded_after:
+            args.extend(["--downloaded-after", self.config.transfer.downloaded_after])
         
         # Server IDs come after all options
         args.append(self.config.jfrog.source_server_id)

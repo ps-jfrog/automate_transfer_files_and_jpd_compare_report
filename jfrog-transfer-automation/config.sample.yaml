@@ -112,6 +112,18 @@ transfer:
   # If true, pass ignore-state to transfer-files (full re-sync style behavior per JFrog CLI semantics).
   ignore_state: false
 
+  # Optional. Transfer only files created at or after this exact UTC timestamp.
+  # Format: YYYY-MM-DDTHH:mm:ss.sssZ
+  # When both created_after and downloaded_after are set, JFrog CLI uses created_after.
+  # Omit or leave null to transfer without a created-date filter (default).
+  created_after: null
+
+  # Optional. Transfer only files last downloaded at or after this exact UTC timestamp.
+  # Format: YYYY-MM-DDTHH:mm:ss.sssZ
+  # Files that were never downloaded are excluded. Ignored by JFrog CLI when created_after is also set.
+  # Omit or leave null to transfer without a last-downloaded filter (default).
+  downloaded_after: null
+
   # per_repo mode only: max number of repos to drive in parallel per batch.
   batch_size: 4
 
