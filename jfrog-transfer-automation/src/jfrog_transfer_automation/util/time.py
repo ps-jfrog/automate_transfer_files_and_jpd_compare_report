@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, time
+from datetime import date, datetime, timedelta, time, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 
@@ -9,6 +10,24 @@ from zoneinfo import ZoneInfo
 class ScheduleWindow:
     start: datetime
     end: datetime | None
+
+
+def to_cli_utc_timestamp(value: Any) -> str | None:
+    """Normalize YAML timestamps for ``jf rt transfer-files``.
+
+    Unquoted ISO-8601 values are parsed by PyYAML as ``datetime``, but the CLI
+    flags need ``YYYY-MM-DDTHH:mm:ss.sssZ``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        ms = dt.microsecond // 1000
+        return f"{dt:%Y-%m-%dT%H:%M:%S}.{ms:03d}Z"
+    if isinstance(value, date):
+        return f"{value.isoformat()}T00:00:00.000Z"
+    text = str(value).strip()
+    return text or None
 
 
 def parse_hhmm(value: str) -> time:

@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 import yaml
 
+from jfrog_transfer_automation.util.time import to_cli_utc_timestamp
 from jfrog_transfer_automation.config.model import (
     AppConfig,
     EmailConfig,
@@ -68,6 +69,9 @@ def load_config(path: str) -> AppConfig:
                 # Don't resolve it, let load_repos handle it (it will check relative to CWD)
                 logger.debug(f"Keeping include_repos_file as-is (has directory components, relative to CWD): {include_repos_file}")
     
+    transfer_raw["created_after"] = to_cli_utc_timestamp(transfer_raw.get("created_after"))
+    transfer_raw["downloaded_after"] = to_cli_utc_timestamp(transfer_raw.get("downloaded_after"))
+
     logger.debug(f"Creating TransferConfig with: {transfer_raw}")
     transfer = TransferConfig(**transfer_raw)
     logger.debug(f"TransferConfig created - ignore_state: {transfer.ignore_state} (type: {type(transfer.ignore_state)})")

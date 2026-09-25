@@ -92,6 +92,10 @@ transfer:
   # See path resolution notes at the top of this file.
   include_repos_file: "repos.txt"
 
+  # When true, skip `jf rt transfer-files --prechecks` at the start of the run.
+  # Does not skip --created-after / --downloaded-after on the real transfer.
+  skip_prechecks: true
+
   # Optional inline list of repo keys instead of a file. If set (non-null), include_repos_file is ignored.
   include_repos_inline: null
 
@@ -116,7 +120,7 @@ transfer:
   # Format: YYYY-MM-DDTHH:mm:ss.sssZ
   # When both created_after and downloaded_after are set, JFrog CLI uses created_after.
   # Omit or leave null to transfer without a created-date filter (default).
-  created_after: null
+  created_after: "2026-07-01T00:00:00.000Z"
 
   # Optional. Transfer only files last downloaded at or after this exact UTC timestamp.
   # Format: YYYY-MM-DDTHH:mm:ss.sssZ

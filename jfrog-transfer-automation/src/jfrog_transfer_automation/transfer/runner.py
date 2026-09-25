@@ -17,6 +17,7 @@ from jfrog_transfer_automation.config.model import AppConfig
 from jfrog_transfer_automation.jfrog.cli import JFrogCLI
 from jfrog_transfer_automation.transfer.repo_list import load_repos
 from jfrog_transfer_automation.util import HINT_SCENARIO_A
+from jfrog_transfer_automation.util.time import to_cli_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -160,11 +161,16 @@ class TransferRunner:
         if self.config.transfer.filestore:
             args.append("--filestore")
 
-        if self.config.transfer.created_after:
-            args.extend(["--created-after", self.config.transfer.created_after])
-        if self.config.transfer.downloaded_after:
-            args.extend(["--downloaded-after", self.config.transfer.downloaded_after])
-        
+        created_after = to_cli_utc_timestamp(self.config.transfer.created_after)
+        if created_after:
+            args.extend(["--created-after", created_after])
+            logger.debug(f"Adding created-after argument: {created_after}")
+
+        downloaded_after = to_cli_utc_timestamp(self.config.transfer.downloaded_after)
+        if downloaded_after:
+            args.extend(["--downloaded-after", downloaded_after])
+            logger.debug(f"Adding downloaded-after argument: {downloaded_after}")
+
         # Server IDs come after all options
         args.append(self.config.jfrog.source_server_id)
         args.append(self.config.jfrog.target_server_id)
@@ -181,6 +187,10 @@ class TransferRunner:
         Returns ``(success, output)`` — *output* contains the CLI stdout/stderr
         which is useful for diagnosing failures.
         """
+        if self.config.transfer.skip_prechecks:
+            logger.info("Skipping pre-flight connectivity check (transfer.skip_prechecks=true)")
+            return True, "skipped"
+
         args = self._build_transfer_args(repos) + ["--prechecks"]
         env = self._make_env(
             cli_home_dir, JFROG_CLI_LOG_LEVEL=self.config.transfer.cli_log_level,

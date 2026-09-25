@@ -35,8 +35,6 @@ class TransferConfig:
     threads: int = 8
     filestore: bool = True
     ignore_state: bool = False
-    created_after: Optional[str] = None
-    downloaded_after: Optional[str] = None
     batch_size: int = 4
     max_total_threads: Optional[int] = None
     adaptive_threads: bool = False
@@ -44,6 +42,11 @@ class TransferConfig:
     poll_interval_seconds: int = 60
     jfrog_cli_home_strategy: str = "default"
     cli_log_level: str = "INFO"  # DEBUG, INFO, WARN, ERROR
+    # When true, skip `jf rt transfer-files --prechecks` at the start of a run.
+    skip_prechecks: bool = False
+    # Optional UTC timestamps for jf rt transfer-files. Unset = current CLI behavior.
+    created_after: Optional[str] = None
+    downloaded_after: Optional[str] = None
 
 
 @dataclass
