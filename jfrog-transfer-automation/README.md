@@ -297,9 +297,14 @@ Delta sync state: `<output_dir>/cli_homes/<repo>/` (per-repo, persistent across 
 1. `tail -f <output_dir>/background.log` — is the process running? Any startup errors?
 2. `cat <output_dir>/run.log` — which run cycle is active? Did the scheduler stop?
 3. `tail -f <output_dir>/<latest-timestamp>/run.log` — what's happening in the current transfer?
-4. Get the main log entries from the  `<output_dir>/<latest-timestamp>/run.log`:
+4. Get the main log entries from the  `<output_dir>/<latest-timestamp>/run.log`.
+   The pattern below covers both modes' phrasing — `per_repo` mode logs
+   `Transfer completed for <repo>` / `Transfer for <repo> ...`, while
+   `single_command` mode logs `Transfer completed` / `Transfer failed` /
+   `Transfer appears stuck` / `Transfer stuck` without a repo name (there's
+   one combined transfer, not one per repo):
 ```
-grep "jf rt transfer\|Transfer completed for\|Transfer for\|Environment: JFROG_CLI_LOG_LEVEL" run.log > transfer_main_log_entries.txt
+grep "jf rt transfer\|Transfer completed\|Transfer failed\|Transfer for\|Transfer stuck\|Transfer appears stuck\|Environment: JFROG_CLI_LOG_LEVEL" run.log > transfer_main_log_entries.txt
 ````
 5. Check if any repo transfers failed with `exit code` that is not zero
 ```
