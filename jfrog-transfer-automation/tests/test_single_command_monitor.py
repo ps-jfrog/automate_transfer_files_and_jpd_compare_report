@@ -17,12 +17,19 @@ from jfrog_transfer_automation.transfer.runner import TransferRunner
 
 
 class FakeProc:
-    """Minimal stand-in for subprocess.Popen, driven by a list of poll() results."""
+    """Minimal stand-in for subprocess.Popen, driven by a list of poll() results.
 
-    def __init__(self, poll_sequence):
+    ``stdout_lines`` feeds the log-demultiplexer thread (see
+    ``_demux_single_command_output``) — a real Popen's stdout would block
+    waiting for more output, but a plain iterable is fine here since the
+    thread just needs *something* iterable to drain without hanging.
+    """
+
+    def __init__(self, poll_sequence, stdout_lines=None):
         self._poll_sequence = list(poll_sequence)
         self.pid = 12345
         self.killed = False
+        self.stdout = iter(stdout_lines or [])
 
     def poll(self) -> Optional[int]:
         if self._poll_sequence:
@@ -140,3 +147,51 @@ def test_single_command_stuck_transfer_restarts_then_partial(tmp_path, monkeypat
     assert result.status == "partial"
     assert "stuck" in result.message.lower()
     assert all(p.killed for p in procs[:-1]), "all restarted processes must have been killed"
+
+
+def test_single_command_demuxes_per_repo_logs(tmp_path, monkeypatch) -> None:
+    """The combined stream must be split into logs/<repo>.log by CLI phase markers.
+
+    Repos are transferred sequentially by the real JFrog CLI, and its raw
+    output includes markers like "for repo 'X'" / "repository 'X'" at each
+    repo's phase boundaries. The demultiplexer thread watches for these to
+    route lines to the correct per-repo file, in addition to always writing
+    everything to the combined logs/transfer.log.
+    """
+    stdout_lines = [
+        "12:00:00 [Info] Checking connectivity...\n",
+        "12:00:01 [Debug] Getting repository 'repo-a' details ...\n",
+        "12:00:01 [Info] Updating repository 'repo-a'...\n",
+        "12:00:02 [Info] ========== Running 'Files Diff Handling Phase' for repo 'repo-a'... ==========\n",
+        "12:00:03 [Info] Some repo-a detail line\n",
+        "12:00:04 [Info] ========== Done running 'Files Diff Handling Phase' for repo 'repo-a'. ==========\n",
+        "12:00:05 [Debug] Getting repository 'repo-b' details ...\n",
+        "12:00:05 [Info] ========== Running 'Files Diff Handling Phase' for repo 'repo-b'... ==========\n",
+        "12:00:06 [Info] Some repo-b detail line\n",
+        "12:00:07 [Info] ========== Done running 'Files Diff Handling Phase' for repo 'repo-b'. ==========\n",
+        "12:00:08 [Info] Files transfer is complete!\n",
+    ]
+    proc = FakeProc(poll_sequence=[None, 0], stdout_lines=stdout_lines)
+    runner = _make_runner(monkeypatch, [proc])
+
+    run_dir = tmp_path / "run6"
+    run_dir.mkdir()
+    result = runner.run_and_monitor(run_dir)
+
+    assert result.status == "completed"
+
+    combined = (run_dir / "logs" / "transfer.log").read_text()
+    for line in stdout_lines:
+        assert line in combined, "combined log must always contain every line"
+
+    repo_a_log = (run_dir / "logs" / "repo-a.log").read_text()
+    assert "Some repo-a detail line" in repo_a_log
+    assert "Some repo-b detail line" not in repo_a_log
+    # Preamble (before any repo marker) is job-wide, not repo-a's.
+    assert "Checking connectivity" not in repo_a_log
+
+    repo_b_log = (run_dir / "logs" / "repo-b.log").read_text()
+    assert "Some repo-b detail line" in repo_b_log
+    assert "Some repo-a detail line" not in repo_b_log
+    # Once repo-b's marker starts, later lines with no marker stay with repo-b.
+    assert "Files transfer is complete!" in repo_b_log

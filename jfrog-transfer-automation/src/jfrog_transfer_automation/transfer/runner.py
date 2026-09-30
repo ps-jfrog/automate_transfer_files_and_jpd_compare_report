@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -20,6 +21,16 @@ from jfrog_transfer_automation.util import HINT_SCENARIO_A
 from jfrog_transfer_automation.util.time import to_cli_utc_timestamp
 
 logger = logging.getLogger(__name__)
+
+# Matches the JFrog CLI's per-repo phase-boundary markers in raw
+# transfer-files output, e.g.:
+#   [Info] ========== Running 'Files Diff Handling Phase' for repo 'X'... ==========
+#   [Info] Updating repository 'X'...
+#   [Debug] Getting repository 'X' details ...
+# Used by the single_command log demultiplexer to know which repo's log
+# subsequent lines belong to, since the CLI processes --include-repos
+# sequentially (one repo at a time) but writes everything to one stream.
+_REPO_LOG_MARKER_RE = re.compile(r"(?:for repo|repository) '([^']+)'")
 
 
 @dataclass
@@ -506,6 +517,67 @@ class TransferRunner:
         )
         return log_file, proc, fh
 
+    def _demux_single_command_output(
+        self,
+        proc: subprocess.Popen,
+        combined_fh,
+        run_dir: Path,
+        repos: List[str],
+    ) -> None:
+        """Tee a single_command process's raw output into per-repo log files.
+
+        The JFrog CLI processes ``--include-repos`` sequentially — one repo
+        at a time, in list order — but writes everything to a single
+        stdout/stderr stream. This thread reads that stream line by line,
+        always writing to the combined ``logs/transfer.log``, and additionally
+        watches for the CLI's own per-repo phase-boundary markers (e.g.
+        ``for repo 'X'``, ``repository 'X'``) to know which repo is currently
+        active so it can also tee each line to ``logs/<repo>.log``.
+
+        Preamble lines seen before the first marker (connectivity checks,
+        CLI version banners, etc.) apply to the whole job and are written
+        only to the combined log.
+
+        This is best-effort diagnostics, not a correctness dependency: stuck
+        detection and end_time enforcement in ``run_and_monitor()`` continue
+        to rely on ``logs/transfer.log``'s mtime, which is updated by every
+        line regardless of whether a repo marker was matched. If the CLI ever
+        changes this (undocumented) log wording, per-repo splitting silently
+        stops but the combined log keeps working.
+
+        Runs in its own thread (started by ``start_transfer_single_command``).
+        Owns and closes *combined_fh* and every per-repo file handle it opens
+        once ``proc.stdout`` reaches EOF (process exited or was killed).
+        """
+        repo_set = set(repos)
+        current_repo: Optional[str] = None
+        per_repo_handles: dict = {}
+        try:
+            for line in proc.stdout:
+                combined_fh.write(line)
+                combined_fh.flush()
+
+                match = _REPO_LOG_MARKER_RE.search(line)
+                if match and match.group(1) in repo_set:
+                    current_repo = match.group(1)
+
+                if current_repo:
+                    fh = per_repo_handles.get(current_repo)
+                    if fh is None:
+                        repo_log = run_dir / "logs" / f"{current_repo}.log"
+                        fh = open(repo_log, "a")
+                        per_repo_handles[current_repo] = fh
+                    fh.write(line)
+                    fh.flush()
+        except Exception:
+            logger.exception("single_command log demultiplexer thread failed")
+        finally:
+            if combined_fh and not combined_fh.closed:
+                combined_fh.close()
+            for fh in per_repo_handles.values():
+                if fh and not fh.closed:
+                    fh.close()
+
     def start_transfer_single_command(self, repos: List[str], run_dir: Path):
         """Start a non-blocking single_command transfer covering all repos.
 
@@ -514,20 +586,35 @@ class TransferRunner:
         so the caller can poll for completion, detect a stuck transfer via
         ``stuck_timeout_seconds``, and enforce ``schedule.end_time`` while it
         runs — the same monitoring pattern used by ``per_repo`` mode, applied
-        to the single combined command. It also writes the raw JFrog CLI
-        output to ``<run_dir>/logs/transfer.log``, which single_command mode
-        previously discarded (output was captured in memory only).
+        to the single combined command.
 
-        Returns (log_file_path, Popen_handle, log_file_handle).
-        The caller must close log_file_handle after the process exits.
+        Raw JFrog CLI output is streamed through a log-demultiplexer thread
+        (see ``_demux_single_command_output``) which writes every line to
+        ``<run_dir>/logs/transfer.log`` and additionally tees it into
+        ``<run_dir>/logs/<repo>.log`` for whichever repo is currently active,
+        giving single_command mode the same per-repo log files as ``per_repo``
+        mode despite using one combined CLI process.
+
+        Returns (log_file_path, Popen_handle, demux_thread).
+        The caller must join demux_thread (it closes all file handles in its
+        ``finally`` block) after the process exits or is killed — see
+        ``_join_demux_thread`` / ``_kill_process_and_demux``.
         """
         log_file = run_dir / "logs" / "transfer.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
         fh = open(log_file, "a")
-        proc = self.start_transfer_background(repos, log_fh=fh)
+        proc = self.start_transfer_background(repos, log_fh=subprocess.PIPE)
         logger.info(f"Single-command transfer launched: PID={proc.pid}, repos={len(repos)}")
-        return log_file, proc, fh
+
+        demux_thread = threading.Thread(
+            target=self._demux_single_command_output,
+            args=(proc, fh, run_dir, repos),
+            name="single-command-log-demux",
+            daemon=True,
+        )
+        demux_thread.start()
+        return log_file, proc, demux_thread
 
     def status(self, cli_home_dir: Optional[Path] = None) -> str:
         """Check transfer status for a single CLI home.
@@ -649,6 +736,35 @@ class TransferRunner:
         proc = processes.pop(repo, None)
         fh = log_handles.pop(repo, None)
         cls._kill_process(proc, fh)
+
+    @staticmethod
+    def _join_demux_thread(
+        thread: Optional[threading.Thread], timeout: float = 10,
+    ) -> None:
+        """Wait for the single_command log-demultiplexer thread to drain.
+
+        The thread closes ``logs/transfer.log`` and any ``logs/<repo>.log``
+        handles it opened once the process's stdout reaches EOF. Called after
+        the process has exited (naturally or via ``kill()``) so file handles
+        aren't left open or written to after this point.
+        """
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+
+    @classmethod
+    def _kill_process_and_demux(
+        cls,
+        proc: Optional[subprocess.Popen],
+        thread: Optional[threading.Thread],
+    ) -> None:
+        """Kill a single_command process and wait for its demux thread.
+
+        File handles are owned and closed by the demux thread itself (see
+        ``_demux_single_command_output``), so unlike ``_kill_process`` this
+        does not take/close a file handle directly.
+        """
+        cls._kill_process(proc, fh=None)
+        cls._join_demux_thread(thread)
 
     @staticmethod
     def _is_auth_failure(log_file: Path) -> bool:
@@ -1005,20 +1121,22 @@ class TransferRunner:
         # can poll for completion, enforce schedule.end_time, and detect a
         # stuck transfer via stuck_timeout_seconds — the same monitoring
         # pattern _run_per_repo_mode() uses, applied to the single combined
-        # command. Raw JFrog CLI output is written to
-        # <run_dir>/logs/transfer.log as it happens.
+        # command. Raw JFrog CLI output is streamed through a demultiplexer
+        # thread which writes it to <run_dir>/logs/transfer.log and tees it
+        # into <run_dir>/logs/<repo>.log for whichever repo is currently
+        # active (see start_transfer_single_command).
         poll = self.config.transfer.poll_interval_seconds
         max_restarts = 3
         restart_count = 0
         status_label = "completed"
         message = "Transfer completed"
 
-        log_file, proc, fh = self.start_transfer_single_command(repos, run_dir)
+        log_file, proc, demux_thread = self.start_transfer_single_command(repos, run_dir)
 
         while True:
             if stop_requested and stop_requested():
                 logger.info("Stop requested, killing single-command transfer")
-                self._kill_process(proc, fh)
+                self._kill_process_and_demux(proc, demux_thread)
                 status_label = "stopped"
                 message = "Transfer stopped by user"
                 break
@@ -1032,15 +1150,14 @@ class TransferRunner:
                     self.stop()
                 except Exception as e:
                     logger.warning(f"stop() failed while enforcing end_time: {e}")
-                self._kill_process(proc, fh)
+                self._kill_process_and_demux(proc, demux_thread)
                 status_label = "completed"
                 message = "Transfer stopped due to end_time"
                 break
 
             rc = proc.poll()
             if rc is not None:
-                if not fh.closed:
-                    fh.close()
+                self._join_demux_thread(demux_thread)
                 if rc == 0:
                     logger.info("Transfer completed (exit code 0)")
                 else:
@@ -1061,12 +1178,12 @@ class TransferRunner:
                         self.config.transfer.stuck_timeout_seconds,
                         restart_count, max_restarts,
                     )
-                    self._kill_process(proc, fh)
-                    log_file, proc, fh = self.start_transfer_single_command(repos, run_dir)
+                    self._kill_process_and_demux(proc, demux_thread)
+                    log_file, proc, demux_thread = self.start_transfer_single_command(repos, run_dir)
                     continue
                 else:
                     logger.error("Transfer stuck, max restarts (%d) reached", max_restarts)
-                    self._kill_process(proc, fh)
+                    self._kill_process_and_demux(proc, demux_thread)
                     status_label = "partial"
                     message = (
                         f"Transfer stuck after {max_restarts} restart attempts. "

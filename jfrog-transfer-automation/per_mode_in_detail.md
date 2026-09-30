@@ -25,19 +25,23 @@ run as a blocking call, so `end_time` and `stuck_timeout_seconds` are both
 enforced even mid-transfer — the same monitoring loop `per_repo` mode uses,
 applied to the single combined command.
 
-**Logging/stuck-detection caveat:** because all repos share **one** JFrog CLI
-process, there's a single interleaved `logs/transfer.log` — not a
-`logs/<repo>.log` per repo (the CLI has no flag to split output by repo; you'd
-need one process per repo for that, which is what `per_repo` mode does).
-Repos in `--include-repos` are transferred **sequentially** (one at a time,
-in list order), so stuck detection still correctly catches a hang in
-whichever repo is currently active — there's no other repo running
-concurrently that could mask it. What you lose is *diagnosability*: you have
-to read `logs/transfer.log` and find the last repo-name line before it went
-stale to know which repo hung, and a restart re-invokes the **entire**
-`--include-repos` list from the top rather than just the one stuck repo.
-Use `per_repo` mode if you need per-repo log files or a restart scoped to a
-single repo.
+**Logging:** all repos share **one** JFrog CLI process, so raw output arrives
+as a single stream. It's always written in full to `logs/transfer.log`, and
+a demultiplexer thread additionally tees it into `logs/<repo>.log` per repo
+by watching the CLI's own per-repo phase markers (e.g. `for repo 'X'`,
+`repository 'X'...`) — the same markers the CLI prints because repos in
+`--include-repos` are transferred **sequentially** (one at a time, in list
+order). This gives you the same `logs/<repo>.log` files as `per_repo` mode.
+Two caveats: (1) the split relies on undocumented log wording, so treat
+`logs/transfer.log` as the authoritative fallback if a per-repo file looks
+incomplete; (2) a restart re-invokes the **entire** `--include-repos` list
+from the top rather than just the one stuck repo — use `per_repo` mode if
+you need a restart scoped to a single repo.
+
+**Stuck detection** is based on `logs/transfer.log`'s modification time (not
+the per-repo files), and is unaffected by the caveats above — since repos
+are processed sequentially, a hang in the currently-active repo always goes
+stale correctly.
 
 **How to tune:** just pick `threads`. Start conservative (e.g. 32–128), watch source Artifactory CPU/network, raise if fine.
 
@@ -116,7 +120,8 @@ Result: starts at 256 per repo (4 × 256 = 1024). As repos finish, remaining rep
 | Many repos, want parallelism | `per_repo` + `per_repo_isolated` | `threads`, `batch_size`, `max_total_threads` |
 | Same as above + want to squeeze max throughput | Add `adaptive_threads: true` | Set `threads = max_total_threads` |
 | Recover automatically from stuck transfers | Both modes support this | `stuck_timeout_seconds` |
-| Restart isolation per repo when stuck | Only `per_repo` supports this (single_command restarts the whole combined transfer) | `stuck_timeout_seconds` + `per_repo` |
+| Restart isolation per repo when stuck | Only `per_repo` supports this (single_command restarts the whole combined transfer, even though it also has per-repo log files) | `stuck_timeout_seconds` + `per_repo` |
+| Per-repo log files (`logs/<repo>.log`) | Both modes — `per_repo` writes them directly; `single_command` demultiplexes them from the combined stream (best-effort) | n/a |
 
 ## Rule of thumb
 

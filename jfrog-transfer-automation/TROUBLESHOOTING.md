@@ -143,20 +143,20 @@ applies to **both** `transfer.mode` values, but with different granularity:
 | | `per_repo` | `single_command` |
 |---|---|---|
 | What gets restarted | Only the stuck repo; others in the batch keep running | The **entire** combined transfer (re-invokes `--include-repos` with **all** repos from the top of the list) |
-| What's checked for staleness | The stuck repo's own `logs/<repo>.log` | The single shared `logs/transfer.log` |
+| What's checked for staleness | The stuck repo's own `logs/<repo>.log` | The combined `logs/transfer.log` (not the demultiplexed per-repo files, which are best-effort — see below) |
 | Detection accuracy | Each repo is isolated | Still accurate — repos in `--include-repos` are transferred **sequentially** (one at a time, in list order), so a hang in the currently-active repo correctly goes stale with no other repo running concurrently to mask it |
-| Diagnosability | The repo name is right there in the file name | You have to open `logs/transfer.log` and find the last repo-name line before it went stale to identify which repo was in progress |
+| Diagnosability | The repo name is right there in the file name | `logs/<repo>.log` is also written per repo (demultiplexed from the combined stream by watching the CLI's own per-repo phase markers), so you get the same per-repo file lookup as `per_repo` mode — cross-check `logs/transfer.log` if a repo's file looks incomplete |
 
-After 3 failed restart attempts the run is marked `"partial"`. If you want
-per-repo log files or a restart scoped to just the one stuck repo (instead
-of re-running the whole combined list), switch to `per_repo` mode (with
+After 3 failed restart attempts the run is marked `"partial"`. If you want a
+restart scoped to just the one stuck repo (instead of re-running the whole
+combined list), switch to `per_repo` mode (with
 `jfrog_cli_home_strategy: "per_repo_isolated"`) — see [README.md > Transfer
 Modes](README.md#transfer-modes).
 
 **Solution**:
 - Check `stuck_timeout_seconds` setting
-- Review transfer logs for errors — `logs/<repo>.log` (per_repo) or
-  `logs/transfer.log` (single_command)
+- Review transfer logs for errors — `logs/<repo>.log` (available in both
+  modes) or the combined `logs/transfer.log` (single_command mode fallback)
 - Use `jfrog-transfer-automation status` to check JFrog transfer status
 - Manually check: `jf rt transfer-files --status`
 
@@ -314,7 +314,7 @@ Two common scenarios are covered — use whichever applies (or both).
 | Setting | What it controls | Where logs appear |
 |---------|-----------------|-------------------|
 | `--verbose` flag | The **automation tool's** own Python logging (DEBUG level) — config resolution, API URLs, orchestration decisions | `runs/<timestamp>/run.log` and console |
-| `transfer.cli_log_level: "DEBUG"` in config | The **JFrog CLI** process logging — detailed transfer-files protocol messages, upload/download progress, retries | `runs/<timestamp>/logs/<repo>.log` (per_repo mode) or `runs/<timestamp>/logs/transfer.log` (single_command mode) |
+| `transfer.cli_log_level: "DEBUG"` in config | The **JFrog CLI** process logging — detailed transfer-files protocol messages, upload/download progress, retries | `runs/<timestamp>/logs/<repo>.log` (both modes — in `single_command` mode this is demultiplexed from `runs/<timestamp>/logs/transfer.log`, which also always has the full combined output) |
 
 For most issues you need **both**: `--verbose` shows what the automation decided
 to do, and `cli_log_level: "DEBUG"` shows what the JFrog CLI actually did.
@@ -347,18 +347,21 @@ jfrog-transfer-automation run-once --config config.yaml --verbose
 |---|----------|--------------------|
 | 1 | **Full run directory** (zip) | `zip -r failed-run.zip runs/<timestamp>/` |
 | 2 | **Orchestration log** | `runs/<timestamp>/run.log` |
-| 3 | **Raw transfer logs** (especially failed repos) | `runs/<timestamp>/logs/<repo>.log` (per_repo mode) or `runs/<timestamp>/logs/transfer.log` (single_command mode) |
+| 3 | **Raw transfer logs** (especially failed repos) | `runs/<timestamp>/logs/<repo>.log` (both modes) — in `single_command` mode also grab `runs/<timestamp>/logs/transfer.log` (the always-complete combined stream) |
 | 4 | **Run summary** | `runs/<timestamp>/summary.json` and `runs/current_run.json` |
 | 5 | **Config file** (redact tokens) | Your `config.yaml` — replace any `access_token` values with `***` |
 | 6 | **JFrog CLI version** | `jf --version` |
 | 7 | **Server config check** | `jf c show <source-server-id>` and `jf c show <target-server-id>` |
 | 8 | **Manual transfer test** for a failed repo | `jf rt transfer-files <source-server-id> <target-server-id> --include-repos "<failed-repo>"` |
 
-> **Tip:** The raw transfer logs at `runs/<timestamp>/logs/<repo>.log` (per_repo
-> mode) or `runs/<timestamp>/logs/transfer.log` (single_command mode) are the
-> most important file for diagnosing exit-code-1 failures. They contain the raw
-> JFrog CLI output including any error messages, retry attempts, and transfer protocol
-> details — but only at full detail when `cli_log_level` is set to `"DEBUG"`.
+> **Tip:** The raw transfer logs at `runs/<timestamp>/logs/<repo>.log` (present
+> in both modes — demultiplexed from the combined stream in `single_command`
+> mode) are the most important file for diagnosing exit-code-1 failures. They
+> contain the raw JFrog CLI output including any error messages, retry
+> attempts, and transfer protocol details — but only at full detail when
+> `cli_log_level` is set to `"DEBUG"`. In `single_command` mode, also check
+> `runs/<timestamp>/logs/transfer.log` if the per-repo file looks incomplete;
+> it always has the full combined output.
 
 ---
 

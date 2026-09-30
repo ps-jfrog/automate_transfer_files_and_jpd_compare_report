@@ -83,25 +83,36 @@ transfer:
   - Raw CLI output is written to `<output_dir>/<timestamp>/logs/transfer.log`
   - `stuck_timeout_seconds` restarts the whole combined transfer if it makes no progress
   - `schedule.end_time` is enforced even mid-transfer (the process is killed and a platform-side `--stop` is sent)
+- A log demultiplexer thread also tees the output into `<output_dir>/<timestamp>/logs/<repo>.log` per repo (see below)
 
-> **Troubleshooting granularity tradeoff:** because all repos share **one**
-> JFrog CLI process, `logs/transfer.log` is a single interleaved stream — there
-> is no `logs/<repo>.log` per repo (the JFrog CLI has no flag to split output
-> by repo). Repos in `--include-repos` are transferred **sequentially, one at
-> a time, in list order** — the next repo doesn't start until the current one
-> finishes — so `stuck_timeout_seconds` correctly detects a hang in whichever
-> repo is currently active (there's no other repo running concurrently to
-> mask it). What you lose is *diagnosability*, not detection: to find out
-> *which* repo was in progress when it stalled, you have to read
-> `logs/transfer.log` and find the last repo-name line before the log went
-> stale, whereas `per_repo` mode gives you that immediately from the file
-> name. Also, restarting a stuck single_command transfer re-invokes the
-> **entire** `--include-repos` list from the top of the combined command
-> (JFrog CLI's own transfer-state/delta-sync should skip repos already fully
-> transferred, but the whole process still has to re-initialize and walk the
-> list again — unlike `per_repo` mode, which restarts only the one stuck
-> repo). Use `per_repo` mode if you want per-repo log files or a restart
-> scoped to a single repo.
+**Per-repo log splitting:** repos in `--include-repos` are transferred
+**sequentially, one at a time, in list order** — the next repo doesn't start
+until the current one finishes. While doing so, the JFrog CLI prints
+per-repo phase-boundary markers in its raw output (e.g. `for repo 'X'`,
+`repository 'X'...`). The demultiplexer watches for these markers and routes
+each line to `logs/<repo>.log` for whichever repo is currently active, in
+addition to always writing every line to the combined `logs/transfer.log`.
+This gives `single_command` mode the same per-repo log files as `per_repo`
+mode despite using one combined CLI process.
+
+> **Caveats:**
+> - This per-repo split relies on log wording the JFrog CLI doesn't document
+>   as a stable contract. If a future CLI version rewords those lines, the
+>   split silently stops working — `logs/transfer.log` (which every line
+>   always goes to) is unaffected and remains the authoritative fallback.
+> - `stuck_timeout_seconds` staleness detection is based on `logs/transfer.log`'s
+>   mtime (not the per-repo files), so detection is unaffected either way —
+>   repos are processed sequentially, so a hang in the currently-active repo
+>   is always caught regardless of marker-matching.
+> - Preamble output before the first repo marker (connectivity checks, CLI
+>   version banners) is job-wide and only appears in `logs/transfer.log`.
+> - Restarting a stuck single_command transfer re-invokes the **entire**
+>   `--include-repos` list from the top of the combined command (JFrog CLI's
+>   own transfer-state/delta-sync should skip repos already fully
+>   transferred, but the whole process still has to re-initialize and walk
+>   the list again) — unlike `per_repo` mode, which restarts only the one
+>   stuck repo. Use `per_repo` mode if you need a restart scoped to a single
+>   repo.
 
 ### `per_repo`
 
@@ -191,8 +202,8 @@ transfer:
 
 The `output_dir` (configured via `report.output_dir`, default `./runs`) contains both persistent state and per-run artifacts. The `cli_homes/` directory (persistent CLI state) differs depending on `jfrog_cli_home_strategy`, shown below. The `logs/` directory's *contents* depend on `transfer.mode` instead, independent of the strategy:
 
-- `mode: "single_command"` → a single combined `logs/transfer.log` (all repos in one JFrog CLI process)
-- `mode: "per_repo"` → one file per repo, `logs/<repo>.log`
+- `mode: "single_command"` → one combined `logs/transfer.log` (all repos in one JFrog CLI process) **plus** a demultiplexed `logs/<repo>.log` per repo (see [Per-repo log splitting](#single_command-default) above)
+- `mode: "per_repo"` → one file per repo, `logs/<repo>.log` (one JFrog CLI process per repo — no demultiplexing needed)
 
 #### With `jfrog_cli_home_strategy: "default"`
 
@@ -215,8 +226,9 @@ All repos share the system-wide JFrog CLI home (`~/.jfrog`). Delta sync state is
 │   │   ├── source-storageinfo-*.json
 │   │   └── target-storageinfo-*.json
 │   └── logs/                              ← raw JFrog CLI output (see note above)
-│       └── transfer.log                   ← single_command mode: one combined file
-│           (or repo-a.log / repo-b.log if mode: "per_repo")
+│       ├── transfer.log                   ← single_command mode: combined stream (all repos)
+│       ├── repo-a.log                     ← single_command mode: demultiplexed per repo
+│       └── repo-b.log                     ← (per_repo mode: these are the only files, no transfer.log)
 │
 └── 20260128_214200/                       ← next run (same structure)
     └── ...
@@ -275,7 +287,8 @@ Delta sync state: `<output_dir>/cli_homes/<repo>/` (per-repo, persistent across 
 | `background.log` | `<output_dir>/background.log` | All stdout/stderr from a `--background` process (scheduler or run-once). Includes every message that would appear in the terminal if run in foreground. | **First place to check** when a `--background` process exits unexpectedly or doesn't seem to start. Use `tail -f` to follow progress. |
 | `run.log` (base) | `<output_dir>/run.log` | Scheduler-level lifecycle: which run cycle is starting/finishing, pause durations, stop signals. Only created when using `scheduler`. | Check to see how many transfer cycles have completed, whether the scheduler stopped cleanly, or if a stop signal was received. |
 | `run.log` (per-run) | `<output_dir>/<timestamp>/run.log` | Detailed orchestration for a single transfer cycle: repo loading, batch processing, thread settings, prechecks, bootstrap, transfer launch/completion, report generation. Includes DEBUG-level messages when `--verbose` is used. | **Primary troubleshooting log** for a specific transfer run. Shows which repos were processed, thread counts, timing, errors, and retry attempts. |
-| `<repo>.log` (or `transfer.log`) | `<output_dir>/<timestamp>/logs/<repo>.log` — `per_repo` mode only, one file per repo. In `single_command` mode all repos share a single `logs/transfer.log`. | Raw JFrog CLI `transfer-files` output: connectivity checks, file counts, transfer progress, errors, data-transfer plugin version. | Check when a transfer fails or behaves unexpectedly. Shows JFrog Platform trace IDs for cross-referencing with server-side logs. |
+| `<repo>.log` | `<output_dir>/<timestamp>/logs/<repo>.log` — one file per repo, in **both** modes. `per_repo` mode: written directly (one CLI process per repo). `single_command` mode: demultiplexed from the combined stream by watching the CLI's per-repo phase markers (best-effort; see caveats above). | Raw JFrog CLI `transfer-files` output for that repo: connectivity checks, file counts, transfer progress, errors, data-transfer plugin version. | Check when a transfer fails or behaves unexpectedly. Shows JFrog Platform trace IDs for cross-referencing with server-side logs. |
+| `transfer.log` | `<output_dir>/<timestamp>/logs/transfer.log` — `single_command` mode only. Combined stream for **all** repos, always complete (unlike the per-repo split, which depends on marker-matching). | Same raw JFrog CLI output as `<repo>.log`, but for the whole run rather than one repo. | The authoritative fallback for `single_command` mode — use if a `<repo>.log` file seems incomplete or the marker-based split didn't catch a repo. |
 | `current_run.json` | `<output_dir>/current_run.json` | JSON with `status` (`running`, `completed`, `stopped`, `partial`), `run_dir`, `started_at`, `stopped_at`. | Quick check of current/last run state. Used by `status` and `stop` commands. |
 | `last_run_time.json` | `<output_dir>/last_run_time.json` | Timestamp of last successful completion. | Used by `catch_up_if_missed` to detect missed schedule windows. |
 
@@ -296,6 +309,7 @@ grep "exit code [1-9]\+" run.log
 or
 grep -E "exit code [1-9]+" run.log
 ```
-6. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` (per_repo mode) or
-   `tail -f <output_dir>/<latest-timestamp>/logs/transfer.log` (single_command mode) —
-   why did the transfer fail?
+6. `tail -f <output_dir>/<latest-timestamp>/logs/<repo>.log` — why did the
+   transfer for that repo fail? (Available in both modes; in `single_command`
+   mode also cross-check `logs/transfer.log` if the per-repo split looks
+   incomplete.)

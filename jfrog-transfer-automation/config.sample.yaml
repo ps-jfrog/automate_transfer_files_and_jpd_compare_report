@@ -151,9 +151,11 @@ transfer:
   #   single_command mode  — restarts the whole combined transfer (logs/transfer.log) by
   #                          re-invoking --include-repos with ALL repos from the top of the
   #                          list, up to 3 attempts. Repos are transferred sequentially, so
-  #                          detection is still accurate; you just lose per-repo isolation
-  #                          (diagnosing which repo hung means reading the shared log, and
-  #                          a restart re-runs the whole list, not just the stuck repo).
+  #                          detection is still accurate. single_command mode also writes
+  #                          logs/<repo>.log per repo (demultiplexed from the combined
+  #                          stream), so both modes give you a per-repo log to diagnose which
+  #                          repo hung — but only per_repo mode restarts just that one repo;
+  #                          single_command always re-runs the whole --include-repos list.
   stuck_timeout_seconds: 600
 
   # Seconds between polling transfer status while monitoring a run.
