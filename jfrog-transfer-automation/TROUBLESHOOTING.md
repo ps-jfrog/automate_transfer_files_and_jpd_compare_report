@@ -142,14 +142,15 @@ applies to **both** `transfer.mode` values, but with different granularity:
 
 | | `per_repo` | `single_command` |
 |---|---|---|
-| What gets restarted | Only the stuck repo; others in the batch keep running | The **entire** combined transfer (all repos share one process) |
+| What gets restarted | Only the stuck repo; others in the batch keep running | The **entire** combined transfer (re-invokes `--include-repos` with **all** repos from the top of the list) |
 | What's checked for staleness | The stuck repo's own `logs/<repo>.log` | The single shared `logs/transfer.log` |
-| Detection limitation | None — each repo is isolated | **A stuck repo can go undetected** if another repo in the same combined job is still actively writing to the shared log. Staleness is only detected when the *whole job* produces no output. |
+| Detection accuracy | Each repo is isolated | Still accurate — repos in `--include-repos` are transferred **sequentially** (one at a time, in list order), so a hang in the currently-active repo correctly goes stale with no other repo running concurrently to mask it |
+| Diagnosability | The repo name is right there in the file name | You have to open `logs/transfer.log` and find the last repo-name line before it went stale to identify which repo was in progress |
 
-After 3 failed restart attempts the run is marked `"partial"`. If you
-suspect single_command is masking a per-repo stall this way, switch to
-`per_repo` mode (with `jfrog_cli_home_strategy: "per_repo_isolated"`) for
-per-repo isolation and stuck detection — see [README.md > Transfer
+After 3 failed restart attempts the run is marked `"partial"`. If you want
+per-repo log files or a restart scoped to just the one stuck repo (instead
+of re-running the whole combined list), switch to `per_repo` mode (with
+`jfrog_cli_home_strategy: "per_repo_isolated"`) — see [README.md > Transfer
 Modes](README.md#transfer-modes).
 
 **Solution**:

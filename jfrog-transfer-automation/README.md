@@ -84,15 +84,24 @@ transfer:
   - `stuck_timeout_seconds` restarts the whole combined transfer if it makes no progress
   - `schedule.end_time` is enforced even mid-transfer (the process is killed and a platform-side `--stop` is sent)
 
-> **Troubleshooting granularity tradeoff:** because all repos share **one** JFrog
-> CLI process, `logs/transfer.log` is a single interleaved stream — there is no
-> `logs/<repo>.log` per repo (the JFrog CLI has no flag to split output by repo).
-> This also limits stuck detection: it only fires when the *entire combined job*
-> produces no output for `stuck_timeout_seconds`. If repo A is actively
-> transferring while repo B (later in the list) is individually stalled, repo
-> A's log activity keeps the file fresh, so the stall in repo B goes
-> undetected. If you need per-repo log isolation or per-repo stuck detection,
-> use `per_repo` mode instead — that is exactly what it's designed for.
+> **Troubleshooting granularity tradeoff:** because all repos share **one**
+> JFrog CLI process, `logs/transfer.log` is a single interleaved stream — there
+> is no `logs/<repo>.log` per repo (the JFrog CLI has no flag to split output
+> by repo). Repos in `--include-repos` are transferred **sequentially, one at
+> a time, in list order** — the next repo doesn't start until the current one
+> finishes — so `stuck_timeout_seconds` correctly detects a hang in whichever
+> repo is currently active (there's no other repo running concurrently to
+> mask it). What you lose is *diagnosability*, not detection: to find out
+> *which* repo was in progress when it stalled, you have to read
+> `logs/transfer.log` and find the last repo-name line before the log went
+> stale, whereas `per_repo` mode gives you that immediately from the file
+> name. Also, restarting a stuck single_command transfer re-invokes the
+> **entire** `--include-repos` list from the top of the combined command
+> (JFrog CLI's own transfer-state/delta-sync should skip repos already fully
+> transferred, but the whole process still has to re-initialize and walk the
+> list again — unlike `per_repo` mode, which restarts only the one stuck
+> repo). Use `per_repo` mode if you want per-repo log files or a restart
+> scoped to a single repo.
 
 ### `per_repo`
 

@@ -29,11 +29,15 @@ applied to the single combined command.
 process, there's a single interleaved `logs/transfer.log` — not a
 `logs/<repo>.log` per repo (the CLI has no flag to split output by repo; you'd
 need one process per repo for that, which is what `per_repo` mode does).
-This also caps stuck-detection granularity: it only fires when the *entire*
-combined job stops producing output. If one repo among many stalls while
-another repo in the same job keeps writing to the shared log, the stall goes
-undetected. Use `per_repo` mode if you need per-repo log isolation or
-per-repo stuck detection.
+Repos in `--include-repos` are transferred **sequentially** (one at a time,
+in list order), so stuck detection still correctly catches a hang in
+whichever repo is currently active — there's no other repo running
+concurrently that could mask it. What you lose is *diagnosability*: you have
+to read `logs/transfer.log` and find the last repo-name line before it went
+stale to know which repo hung, and a restart re-invokes the **entire**
+`--include-repos` list from the top rather than just the one stuck repo.
+Use `per_repo` mode if you need per-repo log files or a restart scoped to a
+single repo.
 
 **How to tune:** just pick `threads`. Start conservative (e.g. 32–128), watch source Artifactory CPU/network, raise if fine.
 

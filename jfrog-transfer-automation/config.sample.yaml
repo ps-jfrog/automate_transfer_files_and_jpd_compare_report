@@ -148,11 +148,12 @@ transfer:
   # Seconds without progress before treating a transfer as stuck and restarting it.
   # Progress is measured by the modification time of the raw CLI output log:
   #   per_repo mode        — restarts the individual stuck repo (logs/<repo>.log), up to 3 attempts.
-  #   single_command mode  — restarts the whole combined transfer (logs/transfer.log), up to 3 attempts.
-  #                          Caveat: all repos share one interleaved log, so a single
-  #                          stuck repo can go undetected while another repo in the
-  #                          same combined job keeps writing to that log. Use per_repo
-  #                          mode if you need per-repo stuck detection.
+  #   single_command mode  — restarts the whole combined transfer (logs/transfer.log) by
+  #                          re-invoking --include-repos with ALL repos from the top of the
+  #                          list, up to 3 attempts. Repos are transferred sequentially, so
+  #                          detection is still accurate; you just lose per-repo isolation
+  #                          (diagnosing which repo hung means reading the shared log, and
+  #                          a restart re-runs the whole list, not just the stuck repo).
   stuck_timeout_seconds: 600
 
   # Seconds between polling transfer status while monitoring a run.
