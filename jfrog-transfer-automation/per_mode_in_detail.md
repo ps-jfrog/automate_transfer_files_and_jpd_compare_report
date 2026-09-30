@@ -25,6 +25,16 @@ run as a blocking call, so `end_time` and `stuck_timeout_seconds` are both
 enforced even mid-transfer — the same monitoring loop `per_repo` mode uses,
 applied to the single combined command.
 
+**Logging/stuck-detection caveat:** because all repos share **one** JFrog CLI
+process, there's a single interleaved `logs/transfer.log` — not a
+`logs/<repo>.log` per repo (the CLI has no flag to split output by repo; you'd
+need one process per repo for that, which is what `per_repo` mode does).
+This also caps stuck-detection granularity: it only fires when the *entire*
+combined job stops producing output. If one repo among many stalls while
+another repo in the same job keeps writing to the shared log, the stall goes
+undetected. Use `per_repo` mode if you need per-repo log isolation or
+per-repo stuck detection.
+
 **How to tune:** just pick `threads`. Start conservative (e.g. 32–128), watch source Artifactory CPU/network, raise if fine.
 
 ```yaml

@@ -84,6 +84,16 @@ transfer:
   - `stuck_timeout_seconds` restarts the whole combined transfer if it makes no progress
   - `schedule.end_time` is enforced even mid-transfer (the process is killed and a platform-side `--stop` is sent)
 
+> **Troubleshooting granularity tradeoff:** because all repos share **one** JFrog
+> CLI process, `logs/transfer.log` is a single interleaved stream — there is no
+> `logs/<repo>.log` per repo (the JFrog CLI has no flag to split output by repo).
+> This also limits stuck detection: it only fires when the *entire combined job*
+> produces no output for `stuck_timeout_seconds`. If repo A is actively
+> transferring while repo B (later in the list) is individually stalled, repo
+> A's log activity keeps the file fresh, so the stall in repo B goes
+> undetected. If you need per-repo log isolation or per-repo stuck detection,
+> use `per_repo` mode instead — that is exactly what it's designed for.
+
 ### `per_repo`
 
 Runs a separate `jf rt transfer-files` command for each repository, with advanced features.

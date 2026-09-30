@@ -138,11 +138,19 @@ JFROG_CLI_HOME_DIR=~/.jfrog jf rt transfer-files --stop
 ### Transfer appears stuck
 
 **Problem**: Transfer doesn't progress. Stuck detection (`stuck_timeout_seconds`)
-applies to **both** `transfer.mode` values: in `per_repo` mode each repo is
-restarted independently; in `single_command` mode the whole combined
-transfer is restarted (staleness is measured from the last write to
-`<output_dir>/<timestamp>/logs/transfer.log`). After 3 failed restart
-attempts the run is marked `"partial"`.
+applies to **both** `transfer.mode` values, but with different granularity:
+
+| | `per_repo` | `single_command` |
+|---|---|---|
+| What gets restarted | Only the stuck repo; others in the batch keep running | The **entire** combined transfer (all repos share one process) |
+| What's checked for staleness | The stuck repo's own `logs/<repo>.log` | The single shared `logs/transfer.log` |
+| Detection limitation | None — each repo is isolated | **A stuck repo can go undetected** if another repo in the same combined job is still actively writing to the shared log. Staleness is only detected when the *whole job* produces no output. |
+
+After 3 failed restart attempts the run is marked `"partial"`. If you
+suspect single_command is masking a per-repo stall this way, switch to
+`per_repo` mode (with `jfrog_cli_home_strategy: "per_repo_isolated"`) for
+per-repo isolation and stuck detection — see [README.md > Transfer
+Modes](README.md#transfer-modes).
 
 **Solution**:
 - Check `stuck_timeout_seconds` setting
