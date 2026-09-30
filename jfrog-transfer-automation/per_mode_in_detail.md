@@ -11,8 +11,19 @@ One JFrog CLI process is launched, and it transfers **all repos together**.
 - `batch_size` (there's no batching — everything runs as one process)
 - `max_total_threads` (there's only one process, so its threads = total load)
 - `adaptive_threads` (nothing to redistribute)
-- `stuck_timeout_seconds` (per-repo restart logic doesn't apply)
 - `jfrog_cli_home_strategy: per_repo_isolated` (no per-repo homes)
+
+**Uses (monitoring):**
+- `stuck_timeout_seconds` — restarts the combined transfer if it makes no
+  progress for N seconds. Progress is measured by the modification time of
+  the raw CLI output log at `<output_dir>/<timestamp>/logs/transfer.log`.
+- `poll_interval_seconds` — how often the monitor checks for completion,
+  staleness, `schedule.end_time`, and a user-invoked `stop`.
+
+The transfer is launched as a background process and monitored rather than
+run as a blocking call, so `end_time` and `stuck_timeout_seconds` are both
+enforced even mid-transfer — the same monitoring loop `per_repo` mode uses,
+applied to the single combined command.
 
 **How to tune:** just pick `threads`. Start conservative (e.g. 32–128), watch source Artifactory CPU/network, raise if fine.
 
@@ -90,7 +101,8 @@ Result: starts at 256 per repo (4 × 256 = 1024). As repos finish, remaining rep
 | Few repos (< 20), you just want it to work | `single_command` | `threads` |
 | Many repos, want parallelism | `per_repo` + `per_repo_isolated` | `threads`, `batch_size`, `max_total_threads` |
 | Same as above + want to squeeze max throughput | Add `adaptive_threads: true` | Set `threads = max_total_threads` |
-| Recover automatically from stuck transfers | Only `per_repo` supports this | `stuck_timeout_seconds` |
+| Recover automatically from stuck transfers | Both modes support this | `stuck_timeout_seconds` |
+| Restart isolation per repo when stuck | Only `per_repo` supports this (single_command restarts the whole combined transfer) | `stuck_timeout_seconds` + `per_repo` |
 
 ## Rule of thumb
 

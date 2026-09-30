@@ -188,7 +188,10 @@ schedule:
 3. When the cutoff is reached:
    - In **per-repo mode**: all active transfer processes in the current
      batch are killed immediately, and remaining batches are skipped.
-   - In **single-command mode**: `jf rt transfer-files --stop` is sent.
+   - In **single-command mode**: the transfer runs as a monitored background
+     process (not a blocking call), so the cutoff is detected even mid-transfer —
+     `jf rt transfer-files --stop` is sent to signal the platform to halt, and
+     the local CLI process is killed.
 4. A comparison **report is still generated** (unlike a user-invoked `stop`),
    and `last_run_time` is updated so the scheduler knows the window was
    covered.

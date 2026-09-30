@@ -145,7 +145,10 @@ transfer:
   #          after 2 repos finish the remaining 2 are boosted to 512/repo.
   adaptive_threads: false
 
-  # per_repo mode only: seconds without progress before treating a repo transfer as stuck for recovery/logging.
+  # Seconds without progress before treating a transfer as stuck and restarting it.
+  # Progress is measured by the modification time of the raw CLI output log:
+  #   per_repo mode        — restarts the individual stuck repo (logs/<repo>.log), up to 3 attempts.
+  #   single_command mode  — restarts the whole combined transfer (logs/transfer.log), up to 3 attempts.
   stuck_timeout_seconds: 600
 
   # Seconds between polling transfer status while monitoring a run.

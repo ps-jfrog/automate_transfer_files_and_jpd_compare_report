@@ -445,7 +445,11 @@ class TransferRunner:
     ) -> None:
         """Start a transfer synchronously (blocks until complete).
 
-        Used by single_command mode where we wait for the CLI to finish.
+        Retained as a simple blocking entry point (e.g. for the ``--dry-run``
+        preview print in ``run_and_monitor()``). The real, non-dry-run
+        single_command execution path uses ``start_transfer_single_command()``
+        instead, which runs as a background process so it can be monitored,
+        stuck-detected, and stopped at ``schedule.end_time``.
         """
         args, env, cwd = self._prepare_transfer(repos, cli_home_dir, dry_run=dry_run)
 
@@ -500,6 +504,29 @@ class TransferRunner:
             [repo], cli_home_dir=cli_home_dir, log_fh=fh,
             active_count=active_count,
         )
+        return log_file, proc, fh
+
+    def start_transfer_single_command(self, repos: List[str], run_dir: Path):
+        """Start a non-blocking single_command transfer covering all repos.
+
+        Unlike ``start_transfer()`` (which blocks until the JFrog CLI process
+        exits), this launches the combined transfer as a background process
+        so the caller can poll for completion, detect a stuck transfer via
+        ``stuck_timeout_seconds``, and enforce ``schedule.end_time`` while it
+        runs — the same monitoring pattern used by ``per_repo`` mode, applied
+        to the single combined command. It also writes the raw JFrog CLI
+        output to ``<run_dir>/logs/transfer.log``, which single_command mode
+        previously discarded (output was captured in memory only).
+
+        Returns (log_file_path, Popen_handle, log_file_handle).
+        The caller must close log_file_handle after the process exits.
+        """
+        log_file = run_dir / "logs" / "transfer.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        fh = open(log_file, "a")
+        proc = self.start_transfer_background(repos, log_fh=fh)
+        logger.info(f"Single-command transfer launched: PID={proc.pid}, repos={len(repos)}")
         return log_file, proc, fh
 
     def status(self, cli_home_dir: Optional[Path] = None) -> str:
@@ -597,22 +624,31 @@ class TransferRunner:
         return self._for_all_cli_homes(lambda d: self.stop(cli_home_dir=d) or "stopped")
 
     @staticmethod
-    def _cleanup_repo_process(
-        repo: str,
-        processes: dict,
-        log_handles: dict,
-    ) -> None:
-        """Kill a running process and close its log handle for a repo."""
-        proc = processes.pop(repo, None)
+    def _kill_process(proc: Optional[subprocess.Popen], fh) -> None:
+        """Kill *proc* if still running and close its log file handle *fh*.
+
+        Shared by per-repo cleanup and the single_command monitoring loop.
+        """
         if proc and proc.poll() is None:
             proc.kill()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-        fh = log_handles.pop(repo, None)
         if fh and not fh.closed:
             fh.close()
+
+    @classmethod
+    def _cleanup_repo_process(
+        cls,
+        repo: str,
+        processes: dict,
+        log_handles: dict,
+    ) -> None:
+        """Kill a running process and close its log handle for a repo."""
+        proc = processes.pop(repo, None)
+        fh = log_handles.pop(repo, None)
+        cls._kill_process(proc, fh)
 
     @staticmethod
     def _is_auth_failure(log_file: Path) -> bool:
@@ -964,81 +1000,84 @@ class TransferRunner:
             )
 
         logger.debug(f"Starting transfer at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started_at))}")
-        self.start_transfer(repos, dry_run=False)
-        logger.debug("Transfer command completed, checking final status...")
-        
-        # The jf rt transfer-files command blocks until transfer completes.
-        # Check status to confirm completion and get final status.
-        final_status = self.status()
-        logger.debug(f"Status after transfer command: {final_status[:200]}{'...' if len(final_status) > 200 else ''}")
-        
-        # Verify the transfer actually completed
-        if self._is_transfer_complete(final_status):
-            logger.info("Transfer completed successfully")
-            ended_at = time.time()
-            result = TransferResult(
-                status="completed",
-                started_at=started_at,
-                ended_at=ended_at,
-                repos=repos,
-                run_dir=run_dir,
-                message="Transfer completed",
-            )
-            self._write_summary(result)
-            logger.debug("=== run_and_monitor: Completed ===")
-            return result
-        else:
-            # Transfer command returned but status shows it's still running - enter monitoring loop
-            logger.warning("Transfer command returned but status indicates transfer may still be running, entering monitoring loop")
-            logger.debug("Entering monitoring loop...")
+
+        # Launched as a background process (not a blocking call) so this loop
+        # can poll for completion, enforce schedule.end_time, and detect a
+        # stuck transfer via stuck_timeout_seconds — the same monitoring
+        # pattern _run_per_repo_mode() uses, applied to the single combined
+        # command. Raw JFrog CLI output is written to
+        # <run_dir>/logs/transfer.log as it happens.
         poll = self.config.transfer.poll_interval_seconds
+        max_restarts = 3
+        restart_count = 0
         status_label = "completed"
-        message = None
-        iteration = 0
-        consecutive_complete_checks = 0
-        required_complete_checks = 2  # Require 2 consecutive "complete" status checks to avoid false positives
-        
+        message = "Transfer completed"
+
+        log_file, proc, fh = self.start_transfer_single_command(repos, run_dir)
+
         while True:
-            iteration += 1
-            current_time = time.time()
-            elapsed = current_time - started_at
-            logger.debug(f"Monitoring loop iteration {iteration} (elapsed: {elapsed:.1f}s)")
-            
-            if end_time and current_time >= end_time:
-                logger.debug(f"End time reached ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}), stopping transfer...")
-                self.stop()
-                status_label = "stopped_by_schedule"
+            if stop_requested and stop_requested():
+                logger.info("Stop requested, killing single-command transfer")
+                self._kill_process(proc, fh)
+                status_label = "stopped"
+                message = "Transfer stopped by user"
+                break
+
+            if end_time and time.time() >= end_time:
+                logger.info(
+                    "End time reached (%s), stopping transfer...",
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time)),
+                )
+                try:
+                    self.stop()
+                except Exception as e:
+                    logger.warning(f"stop() failed while enforcing end_time: {e}")
+                self._kill_process(proc, fh)
+                status_label = "completed"
                 message = "Transfer stopped due to end_time"
                 break
-            
-            logger.debug("Checking transfer status...")
-            try:
-                status = self.status()
-                logger.debug(f"Status check returned (length: {len(status)} chars): {status[:200]}{'...' if len(status) > 200 else ''}")
-                
-                if self._is_transfer_complete(status):
-                    consecutive_complete_checks += 1
-                    logger.debug(f"Transfer complete detected (consecutive checks: {consecutive_complete_checks}/{required_complete_checks})")
-                    
-                    if consecutive_complete_checks >= required_complete_checks:
-                        logger.info(f"Transfer completed detected after {consecutive_complete_checks} consecutive status checks, exiting monitoring loop")
-                        break
-                    else:
-                        logger.debug(f"Waiting for {required_complete_checks - consecutive_complete_checks} more complete status check(s) to confirm...")
+
+            rc = proc.poll()
+            if rc is not None:
+                if not fh.closed:
+                    fh.close()
+                if rc == 0:
+                    logger.info("Transfer completed (exit code 0)")
                 else:
-                    # Reset counter if status shows transfer is still running
-                    if consecutive_complete_checks > 0:
-                        logger.debug(f"Transfer status changed back to active, resetting completion counter")
-                        consecutive_complete_checks = 0
-            except Exception as e:
-                logger.warning(f"Error checking status: {e}, continuing monitoring...")
-                consecutive_complete_checks = 0
-            
-            logger.debug(f"Transfer still running, sleeping for {poll} seconds...")
+                    status_label = "partial"
+                    message = (
+                        f"Transfer failed (exit code {rc}). "
+                        f"Check the log at {log_file} for details."
+                    )
+                    logger.error("%s %s", message, HINT_SCENARIO_A)
+                break
+
+            if self._check_stuck(log_file):
+                if restart_count < max_restarts:
+                    restart_count += 1
+                    logger.warning(
+                        "Transfer appears stuck (no log activity for over %ds), "
+                        "restarting (attempt %d/%d)",
+                        self.config.transfer.stuck_timeout_seconds,
+                        restart_count, max_restarts,
+                    )
+                    self._kill_process(proc, fh)
+                    log_file, proc, fh = self.start_transfer_single_command(repos, run_dir)
+                    continue
+                else:
+                    logger.error("Transfer stuck, max restarts (%d) reached", max_restarts)
+                    self._kill_process(proc, fh)
+                    status_label = "partial"
+                    message = (
+                        f"Transfer stuck after {max_restarts} restart attempts. "
+                        f"Check the log at {log_file} for details."
+                    )
+                    break
+
             time.sleep(poll)
 
         ended_at = time.time()
-        logger.debug(f"Monitoring loop exited after {iteration} iterations. Total time: {ended_at - started_at:.1f}s")
+        logger.debug(f"Total time: {ended_at - started_at:.1f}s, Status: {status_label}, {message}")
         result = TransferResult(
             status=status_label,
             started_at=started_at,
