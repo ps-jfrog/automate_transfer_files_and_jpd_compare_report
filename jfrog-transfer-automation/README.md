@@ -1,7 +1,7 @@
 # JFrog Transfer Automation
 
 Automates daily delta syncs using `jf rt transfer-files`, generates a high-level
-comparison report, and optionally sends notifications.
+comparison report.
 
 ## Key features
 - **Pre-flight connectivity check** — validates source↔target connectivity before every transfer; fails fast with actionable guidance if the data-transfer plugin is missing, network is blocked, or permissions are insufficient
@@ -318,3 +318,5 @@ grep -E "exit code [1-9]+" run.log
    transfer for that repo fail? (Available in both modes; in `single_command`
    mode also cross-check `logs/transfer.log` if the per-repo split looks
    incomplete.)
+
+**To do:**  The notification feature to optionally send notifications when one run is complete and a comparison report is generated is not implemented yet.
